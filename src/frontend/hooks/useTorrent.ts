@@ -7,12 +7,15 @@ export function useTorrent() {
   const [catalog, setCatalog] = useState<TorrentCatalog | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [selectedFile, setSelectedFile] = useState<number | null>(null);
 
   async function load(magnet: string) {
     setLoading(true);
     setError("");
     try {
-      setCatalog(await torrentService.resolve(magnet));
+      const resolved = await torrentService.resolve(magnet);
+      setCatalog(resolved);
+      setSelectedFile(resolved.suggestedFileIndex);
     } catch (cause) {
       setError(getErrorMessage(cause));
     } finally {
@@ -25,5 +28,5 @@ export function useTorrent() {
     catch (cause) { setError(getErrorMessage(cause)); }
   }
 
-  return { catalog, loading, error, load, cancel };
+  return { catalog, loading, error, load, cancel, selectedFile, selectFile: setSelectedFile };
 }

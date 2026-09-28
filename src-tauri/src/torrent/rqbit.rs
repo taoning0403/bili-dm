@@ -8,11 +8,9 @@ use librqbit::{
 use tokio::sync::{Mutex, OnceCell};
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    models::{TorrentCatalog, TorrentFile},
-    TorrentEngine,
-};
+use super::{models::TorrentCatalog, TorrentEngine};
 use crate::core::error::{AppError, AppResult};
+use crate::media::files::{preferred_video, MediaFile};
 
 pub struct ResolvedTorrent {
     pub catalog: TorrentCatalog,
@@ -88,6 +86,12 @@ impl RqbitEngine {
             }
         };
         let id = metadata.info_hash.as_string();
+        let files: Vec<_> = metadata
+            .info
+            .iter_file_details()
+            .enumerate()
+            .map(|(index, file)| MediaFile::new(index, file.filename.to_string(), file.len))
+            .collect();
         let catalog = TorrentCatalog {
             id: id.clone(),
             name: metadata
@@ -95,16 +99,8 @@ impl RqbitEngine {
                 .name()
                 .map(|name| name.into_owned())
                 .unwrap_or_else(|| id.clone()),
-            files: metadata
-                .info
-                .iter_file_details()
-                .enumerate()
-                .map(|(index, file)| TorrentFile {
-                    index,
-                    path: file.filename.to_string(),
-                    size: file.len,
-                })
-                .collect(),
+            suggested_file_index: preferred_video(&files),
+            files,
         };
         self.resolved.lock().await.insert(
             id,

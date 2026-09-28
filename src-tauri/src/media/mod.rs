@@ -1,2 +1,2 @@
-//! Reserved for Phase 3: media descriptors, file classification, and selection.
-//! This domain will be shared with future metadata and matching integrations.
+//! Shared media descriptors and pure file-selection policy.
+pub mod files;
