@@ -3,7 +3,11 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 const COMMAND_TIMEOUT_MS = 8_000;
 
 /** Keep transport details out of pages and domain services. */
-export async function invokeDesktop<T>(command: string): Promise<T> {
+export async function invokeDesktop<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+): Promise<T> {
   if (!isTauri()) {
     throw new Error("当前为浏览器预览。请运行 npm run desktop:dev 打开桌面应用。");
   }
@@ -12,11 +16,11 @@ export async function invokeDesktop<T>(command: string): Promise<T> {
 
   try {
     return await Promise.race([
-      invoke<T>(command),
+      invoke<T>(command, args),
       new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
           reject(new Error("桌面服务响应超时，请重试或重新启动应用。"));
-        }, COMMAND_TIMEOUT_MS);
+        }, timeoutMs);
       }),
     ]);
   } finally {

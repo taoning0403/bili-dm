@@ -8,7 +8,7 @@ export function AppHeader() {
           <p className="brand-caption">本地媒体播放器</p>
         </div>
       </div>
-      <span className="phase-label">Phase 1 · 项目初始化</span>
+      <span className="phase-label">磁力目录</span>
     </header>
   );
 }

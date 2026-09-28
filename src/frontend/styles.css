@@ -11,6 +11,22 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
 button { font: inherit; }
+button { padding: 9px 16px; border: 1px solid #454d48; border-radius: 6px; background: #252b27; color: #d0dbd5; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:hover:not(:disabled) { background: #36433b; }
+input, textarea { font: inherit; accent-color: #b9ddca; }
+textarea { resize: vertical; width: 100%; min-height: 70px; border: 1px solid #454d48; border-radius: 8px; background: #111413; color: #edf0ee; padding: 12px; margin: 12px 0; }
+textarea:focus-visible { outline: 2px solid #a6dac3; }
+.source-panel, .file-panel { padding: 24px; background: #1b1e1d; border: 1px solid #303533; border-radius: 12px; min-width: 0; }
+.source-panel label { font-size: 16px; }
+.source-actions { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }
+.source-actions .muted { font-size: 12px; }
+.primary-button { background: #b9ddca; color: #18251e; }
+.primary-button:hover:not(:disabled) { background: #cfeddc; }
+.file-list { padding: 0; list-style: none; }
+.file-list li { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid #303533; font-size: 13px; }
+.file-path { overflow-wrap: anywhere; min-width: 0; flex: 1; }
+.file-panel h2 { overflow-wrap: anywhere; }
 button:focus-visible { outline: 2px solid #a6dac3; outline-offset: 4px; }
 h1, h2, p { margin: 0; }
 

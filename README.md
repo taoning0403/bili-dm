@@ -3,7 +3,7 @@
 本地优先的跨平台桌面媒体播放器。使用 Tauri 2、React、TypeScript、Vite 与 Rust。
 后续以 torrent engine 提供流式数据、mpv/libmpv 播放、SQLite 保存本地任务和媒体。
 
-**当前仅完成 Phase 1：桌面工程初始化。尚不支持磁力解析、下载或播放。**
+**当前完成 Phase 2：可从磁力链接读取文件目录；下载与播放将在后续阶段接入。**
 应用不需要账号，不包含云端服务、业务后端 API、AI、弹幕或自动匹配功能。
 
 ## 环境准备
@@ -129,7 +129,7 @@ Tauri 启动层负责管理服务生命周期；Core 不引用 Tauri 类型。
 | 阶段 | 范围 | 状态 |
 | --- | --- | --- |
 | Phase 1 | Tauri + React + Rust、IPC 验证、模块骨架、工程说明 | 当前交付 |
-| Phase 2 | torrent engine、磁力链接解析、metadata 与文件列表 | 未实现 |
+| Phase 2 | torrent engine、磁力链接解析、metadata 与文件列表 | 已完成 |
 | Phase 3 | mp4/mkv/avi/webm/mov 识别、默认选择最大视频 | 未实现 |
 | Phase 4 | mpv/libmpv、边下载边播放、暂停和 seek | 未实现 |
 | Phase 5 | 播放器基础 UI、音量、进度、下载速度与进度 | 未实现 |

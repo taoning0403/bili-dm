@@ -1,28 +1,27 @@
 import { AppHeader } from "../components/AppHeader";
-import { RuntimeStatus } from "../components/RuntimeStatus";
-import { useRuntimeInfo } from "../hooks/useRuntimeInfo";
+import { MagnetInput } from "../components/MagnetInput";
+import { useTorrent } from "../hooks/useTorrent";
+import { formatBytes } from "../lib/format";
 
 export function HomePage() {
-  const { state, refresh } = useRuntimeInfo();
+  const torrent = useTorrent();
 
   return (
     <div className="app-shell">
       <AppHeader />
       <main>
-        <section className="welcome-panel" aria-labelledby="welcome-title">
-          <div className="video-placeholder" aria-hidden="true">
-            <span className="play-outline">▶</span>
-          </div>
-          <div className="welcome-copy">
-            <p className="eyebrow">LOCAL FIRST</p>
-            <h1 id="welcome-title">你的媒体，留在本地。</h1>
-            <p className="muted">播放器正在起步。当前版本提供桌面应用框架，暂未开放媒体播放。</p>
-            <p className="next-step">下一阶段：从磁力链接读取文件列表。</p>
-          </div>
-        </section>
-        <RuntimeStatus state={state} onRefresh={refresh} />
+        <MagnetInput loading={torrent.loading} onLoad={torrent.load} onCancel={torrent.cancel} />
+        {torrent.loading && <p role="status">正在从节点读取元数据…</p>}
+        {torrent.error && <p className="error-message" role="alert">{torrent.error}</p>}
+        {torrent.catalog && <section className="file-panel">
+          <h2>{torrent.catalog.name}</h2>
+          <p className="muted">{torrent.catalog.files.length} 个文件</p>
+          <ul className="file-list">{torrent.catalog.files.map((file) => <li key={file.index}>
+            <span className="file-path">{file.path}</span><span>{formatBytes(file.size)}</span>
+          </li>)}</ul>
+        </section>}
       </main>
-      <footer className="app-footer">无需账号 · 本地优先</footer>
+      <footer className="app-footer">无需账号 · 本地优先 · torrent 数据保存在本机缓存目录</footer>
     </div>
   );
 }
