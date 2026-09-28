@@ -1,0 +1,21 @@
+[package]
+name = "bili-dm"
+version = "0.1.0"
+description = "A local-first desktop media player"
+edition = "2021"
+publish = false
+
+[lib]
+name = "bili_dm_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

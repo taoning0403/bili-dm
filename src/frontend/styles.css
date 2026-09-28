@@ -1,0 +1,58 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  color: #edf0ee;
+  background: #151719;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button { font: inherit; }
+button:focus-visible { outline: 2px solid #a6dac3; outline-offset: 4px; }
+h1, h2, p { margin: 0; }
+
+.app-shell { max-width: 1080px; margin: 0 auto; padding: 0 40px; }
+.app-header { min-height: 110px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.brand { display: flex; align-items: center; gap: 13px; }
+.brand-mark { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; background: #b9ddca; color: #23352e; padding-left: 3px; font-size: 16px; }
+.brand-name { font-size: 17px; font-weight: 650; letter-spacing: 0.02em; }
+.brand-caption { color: #949b9a; font-size: 12px; margin-top: 4px; }
+.phase-label { padding: 7px 11px; border: 1px solid #343a38; border-radius: 6px; color: #a8afac; font-size: 12px; white-space: nowrap; }
+main { display: grid; gap: 24px; }
+.welcome-panel { border: 1px solid #303533; border-radius: 14px; overflow: hidden; background: #1d201f; }
+.video-placeholder { display: grid; place-items: center; height: 190px; background: #111413; border-bottom: 1px solid #2a302d; }
+.play-outline { display: grid; place-items: center; width: 57px; height: 57px; padding-left: 4px; border: 1px solid #38463e; border-radius: 50%; color: #8fbaa3; font-size: 18px; }
+.welcome-copy { padding: 28px 32px 30px; }
+.eyebrow { color: #a5c4b3; font-size: 10px; font-weight: 600; letter-spacing: 0.15em; }
+h1 { margin: 12px 0; font-size: clamp(23px, 3vw, 30px); font-weight: 550; letter-spacing: 0.01em; }
+.muted { color: #a4aaa7; font-size: 14px; line-height: 1.8; }
+.next-step { margin-top: 20px; color: #85988e; font-size: 12px; line-height: 1.8; }
+.runtime-panel { padding: 24px 32px; border: 1px solid #303533; border-radius: 12px; background: #1b1e1d; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+h2 { font-size: 17px; font-weight: 550; margin-top: 8px; }
+.secondary-button { padding: 8px 13px; border: 1px solid #454d48; border-radius: 6px; background: #252b27; color: #d0dbd5; font-size: 12px; cursor: pointer; }
+.secondary-button:hover:not(:disabled) { background: #303a34; }
+.secondary-button:disabled { opacity: 0.55; cursor: wait; }
+.connection-status { display: flex; align-items: center; gap: 8px; color: #badfc9; font-size: 13px; }
+.status-dot { height: 6px; width: 6px; border-radius: 50%; background: #a6d4ba; }
+.runtime-details { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin: 24px 0 0; }
+.runtime-details dt { color: #8a948e; font-size: 11px; margin-bottom: 8px; }
+.runtime-details dd { color: #d9e0dc; font-size: 13px; margin: 0; overflow-wrap: anywhere; }
+.error-message { color: #e8ba95; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.app-footer { color: #7f8983; font-size: 11px; padding: 25px 0 28px; text-align: center; letter-spacing: 0.06em; }
+
+@media (max-width: 680px) {
+  .app-shell { padding: 0 20px; }
+  .app-header { min-height: 100px; }
+  .phase-label { font-size: 10px; }
+  .welcome-copy, .runtime-panel { padding: 24px; }
+  .video-placeholder { height: 140px; }
+  .runtime-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 400px) {
+  .app-header { align-items: flex-start; flex-direction: column; padding: 24px 0; gap: 16px; }
+}
