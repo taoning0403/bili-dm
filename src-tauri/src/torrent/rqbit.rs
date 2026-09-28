@@ -22,6 +22,13 @@ pub struct RqbitEngine {
     session: OnceCell<Arc<Session>>,
     resolved: Mutex<HashMap<String, ResolvedTorrent>>,
     resolution: Mutex<Option<CancellationToken>>,
+    active: Mutex<Option<ActiveDownload>>,
+}
+
+struct ActiveDownload {
+    id: String,
+    file: MediaFile,
+    handle: Arc<librqbit::ManagedTorrent>,
 }
 
 impl RqbitEngine {
@@ -31,6 +38,7 @@ impl RqbitEngine {
             session: OnceCell::new(),
             resolved: Mutex::new(HashMap::new()),
             resolution: Mutex::new(None),
+            active: Mutex::new(None),
         }
     }
 
@@ -169,6 +177,131 @@ impl TorrentEngine for RqbitEngine {
         if let Some(cancel) = self.resolution.lock().await.as_ref() {
             cancel.cancel();
         }
+    }
+
+    async fn prepare_file(&self, id: &str, index: usize) -> AppResult<MediaFile> {
+        let (bytes, peers, file) = {
+            let entries = self.resolved.lock().await;
+            let entry = entries
+                .get(id)
+                .ok_or_else(|| AppError::new("NOT_FOUND", "请先加载磁力目录。"))?;
+            let file = entry
+                .catalog
+                .files
+                .iter()
+                .find(|file| file.index == index)
+                .filter(|file| file.kind == crate::media::files::FileKind::Video && file.size > 0)
+                .ok_or_else(|| AppError::new("INVALID_FILE", "请选择非空的视频文件。"))?
+                .clone();
+            (
+                entry.metadata.torrent_bytes.clone(),
+                entry.metadata.seen_peers.clone(),
+                file,
+            )
+        };
+        let session = self.session().await?;
+        let response = session
+            .add_torrent(
+                AddTorrent::from_bytes(bytes),
+                Some(AddTorrentOptions {
+                    only_files: Some(vec![index]),
+                    initial_peers: Some(peers),
+                    sub_folder: Some(id.to_owned()),
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|error| AppError::new("TORRENT_START", format!("无法开始下载：{error:#}")))?;
+        let handle = response
+            .into_handle()
+            .ok_or_else(|| AppError::new("TORRENT_START", "引擎没有返回下载任务。"))?;
+        *self.active.lock().await = Some(ActiveDownload {
+            id: id.to_owned(),
+            file: file.clone(),
+            handle: handle.clone(),
+        });
+        tokio::time::timeout(Duration::from_secs(60), handle.wait_until_initialized())
+            .await
+            .map_err(|_| AppError::new("TORRENT_INIT_TIMEOUT", "缓存校验超时，请稍后重试。"))?
+            .map_err(|error| {
+                AppError::new("TORRENT_START", format!("缓存初始化失败：{error:#}"))
+            })?;
+        session
+            .update_only_files(&handle, &std::collections::HashSet::from([index]))
+            .await
+            .map_err(|error| {
+                AppError::new("TORRENT_SELECT", format!("无法切换下载文件：{error:#}"))
+            })?;
+        if matches!(handle.stats().state, librqbit::TorrentStatsState::Paused) {
+            session
+                .unpause(&handle)
+                .await
+                .map_err(|error| AppError::new("TORRENT_START", error.to_string()))?;
+        }
+        Ok(file)
+    }
+
+    async fn open_file(&self, id: &str, index: usize) -> AppResult<Box<dyn super::SeekableReader>> {
+        let handle = {
+            let active = self.active.lock().await;
+            active
+                .as_ref()
+                .filter(|active| active.id == id && active.file.index == index)
+                .map(|active| active.handle.clone())
+                .ok_or_else(|| AppError::new("INACTIVE_SOURCE", "媒体源已关闭。"))?
+        };
+        handle
+            .stream(index)
+            .await
+            .map(|reader| Box::new(reader) as Box<dyn super::SeekableReader>)
+            .map_err(|error| AppError::new("STREAM", format!("无法读取视频数据：{error:#}")))
+    }
+
+    async fn download_stats(&self) -> Option<super::models::DownloadStats> {
+        let guard = self.active.lock().await;
+        let active = guard.as_ref()?;
+        let stats = active.handle.stats();
+        Some(super::models::DownloadStats {
+            torrent_id: active.id.clone(),
+            file_index: active.file.index,
+            downloaded: stats
+                .file_progress
+                .get(active.file.index)
+                .copied()
+                .unwrap_or(0)
+                .min(active.file.size),
+            total: active.file.size,
+            bytes_per_second: stats
+                .live
+                .as_ref()
+                .map(|live| live.download_speed.as_bytes())
+                .unwrap_or(0),
+            peers: stats
+                .live
+                .as_ref()
+                .map(|live| live.snapshot.peer_stats.live)
+                .unwrap_or(0),
+            state: stats.state.to_string(),
+            error: stats.error,
+        })
+    }
+
+    async fn pause_download(&self) -> AppResult<()> {
+        let previous = self.active.lock().await.take();
+        if let (Some(previous), Some(session)) = (previous, self.session.get()) {
+            if matches!(
+                previous.handle.stats().state,
+                librqbit::TorrentStatsState::Live
+                    | librqbit::TorrentStatsState::Initializing { .. }
+            ) {
+                session
+                    .pause(&previous.handle)
+                    .await
+                    .map_err(|error| AppError::new("TORRENT_PAUSE", error.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     async fn shutdown(&self) {

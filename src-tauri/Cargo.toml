@@ -22,9 +22,13 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util", "process"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
+axum = "0.8"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+tauri-plugin-dialog = "2"
 
 [dev-dependencies]
-tempfile = "3"
+reqwest = { version = "0.13", default-features = false }
 
 [lints.clippy]
 unwrap_used = "deny"

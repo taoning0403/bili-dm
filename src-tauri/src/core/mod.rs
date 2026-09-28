@@ -3,3 +3,4 @@
 
 pub mod app_service;
 pub mod error;
+pub mod playback_service;
