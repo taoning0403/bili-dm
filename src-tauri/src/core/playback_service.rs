@@ -1,5 +1,6 @@
 use super::error::{AppError, AppResult};
 use crate::{
+    database::{models::MediaRecord, LibraryRepository},
     media::{
         files::{classify, FileKind},
         stream_server::MediaServer,
@@ -8,7 +9,13 @@ use crate::{
     torrent::{models::DownloadStats, TorrentEngine},
 };
 use serde::Serialize;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::{Mutex, OnceCell, RwLock};
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +26,31 @@ pub struct ActiveMedia {
     pub torrent_id: Option<String>,
     pub file_index: Option<usize>,
     pub local_path: Option<String>,
+}
+
+impl ActiveMedia {
+    fn record(&self, duration: Option<f64>) -> MediaRecord {
+        let path = self.local_path.clone().unwrap_or_else(|| {
+            format!(
+                "torrent://{}/{}",
+                self.torrent_id.as_deref().unwrap_or_default(),
+                self.file_index.unwrap_or_default()
+            )
+        });
+        MediaRecord {
+            id: format!("{}:{path}", self.source),
+            path,
+            filename: self
+                .title
+                .rsplit('/')
+                .next()
+                .unwrap_or(&self.title)
+                .to_owned(),
+            duration,
+            torrent_id: self.torrent_id.clone(),
+            file_index: self.file_index,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -35,16 +67,24 @@ pub struct PlaybackService {
     server: OnceCell<MediaServer>,
     current: RwLock<Option<ActiveMedia>>,
     operation: Mutex<()>,
+    library: Arc<dyn LibraryRepository>,
+    duration_saved: AtomicBool,
 }
 
 impl PlaybackService {
-    pub fn new(torrent: Arc<dyn TorrentEngine>, player: Arc<dyn PlayerBackend>) -> Self {
+    pub fn new(
+        torrent: Arc<dyn TorrentEngine>,
+        player: Arc<dyn PlayerBackend>,
+        library: Arc<dyn LibraryRepository>,
+    ) -> Self {
         Self {
             torrent,
             player,
             server: OnceCell::new(),
             current: RwLock::new(None),
             operation: Mutex::new(()),
+            library,
+            duration_saved: AtomicBool::new(false),
         }
     }
 
@@ -69,10 +109,7 @@ impl PlaybackService {
         }
         .await;
         match result {
-            Ok(media) => {
-                *self.current.write().await = Some(media.clone());
-                Ok(media)
-            }
+            Ok(media) => self.remember(media).await,
             Err(error) => {
                 let _ = self.stop_inner().await;
                 Err(error)
@@ -94,7 +131,10 @@ impl PlaybackService {
         }
         let _operation = self.operation.lock().await;
         self.stop_inner().await?;
-        self.player.load(path_text).await?;
+        if let Err(error) = self.player.load(path_text).await {
+            let _ = self.stop_inner().await;
+            return Err(error);
+        }
         let media = ActiveMedia {
             title: path
                 .file_name()
@@ -105,6 +145,15 @@ impl PlaybackService {
             file_index: None,
             local_path: Some(path_text.to_owned()),
         };
+        self.remember(media).await
+    }
+
+    async fn remember(&self, media: ActiveMedia) -> AppResult<ActiveMedia> {
+        if let Err(error) = self.library.save_media(media.record(None)).await {
+            let _ = self.stop_inner().await;
+            return Err(error);
+        }
+        self.duration_saved.store(false, Ordering::Relaxed);
         *self.current.write().await = Some(media.clone());
         Ok(media)
     }
@@ -125,28 +174,51 @@ impl PlaybackService {
         if let Some(server) = self.server.get() {
             server.clear().await;
         }
-        *self.current.write().await = None;
-        self.torrent.pause_download().await
+        let previous = self.current.write().await.take();
+        let paused = self.torrent.pause_download().await;
+        let saved = if let Some(id) = previous.and_then(|media| media.torrent_id) {
+            self.library.pause_task(&id).await
+        } else {
+            Ok(())
+        };
+        paused?;
+        saved
     }
 
     pub async fn snapshot(&self) -> AppResult<PlaybackState> {
-        let player = self.player.snapshot().await?;
+        // Keep media identity, player properties and persisted duration from one session.
+        let _operation = self.operation.lock().await;
+        let mut player = self.player.snapshot().await?;
         // Closing mpv directly must also stop the selected torrent download.
         if !player.running && self.current.read().await.is_some() {
-            if let Ok(_operation) = self.operation.try_lock() {
-                if !self.player.snapshot().await?.running {
-                    self.stop_inner().await?;
-                }
+            self.stop_inner().await?;
+            player = self.player.snapshot().await?;
+        }
+        let media = self.current.read().await.clone();
+        if player.loaded
+            && player.duration.is_finite()
+            && player.duration > 0.0
+            && !self.duration_saved.load(Ordering::Relaxed)
+        {
+            if let Some(media) = &media {
+                self.library
+                    .save_media(media.record(Some(player.duration)))
+                    .await?;
+                self.duration_saved.store(true, Ordering::Relaxed);
             }
         }
         Ok(PlaybackState {
-            media: self.current.read().await.clone(),
+            media,
             player,
             download: self.torrent.download_stats().await,
         })
     }
 
     pub async fn shutdown(&self) {
+        let _operation = self.operation.lock().await;
+        if let Err(error) = self.stop_inner().await {
+            eprintln!("关闭播放任务时发生错误：{error}");
+        }
         self.player.shutdown().await;
         if let Some(server) = self.server.get() {
             server.clear().await;

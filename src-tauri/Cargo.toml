@@ -1,6 +1,6 @@
 [package]
 name = "bili-dm"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local-first desktop media player"
 edition = "2021"
 publish = false
@@ -26,6 +26,7 @@ axum = "0.8"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 tauri-plugin-dialog = "2"
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false }

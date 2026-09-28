@@ -107,3 +107,8 @@ h2 { font-size: 17px; font-weight: 550; margin-top: 8px; }
 @media (max-width: 400px) {
   .app-header { align-items: flex-start; flex-direction: column; padding: 24px 0; gap: 16px; }
 }
+.recent-panel { padding: 1rem 1.4rem; border: 1px solid #303533; border-radius: 12px; }
+.recent-panel summary { cursor: pointer; }
+.recent-panel ul { padding: 0; list-style: none; }
+.recent-panel li { display: grid; gap: 0.4rem; margin-block: 1rem; }
+.recent-panel button { text-align: left; overflow-wrap: anywhere; }

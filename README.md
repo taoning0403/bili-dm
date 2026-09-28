@@ -1,149 +1,138 @@
 # Bili DM
 
-本地优先的跨平台桌面媒体播放器。使用 Tauri 2、React、TypeScript、Vite 与 Rust。
-后续以 torrent engine 提供流式数据、mpv/libmpv 播放、SQLite 保存本地任务和媒体。
+本地优先的桌面媒体播放器，当前版本 **0.2.0**。使用 Tauri 2、React、TypeScript strict、Vite、Rust；librqbit 负责 torrent，mpv 负责播放，SQLite 保存任务和媒体。
 
-**当前完成 Phase 2：可从磁力链接读取文件目录；下载与播放将在后续阶段接入。**
-应用不需要账号，不包含云端服务、业务后端 API、AI、弹幕或自动匹配功能。
+可粘贴磁力链接、读取文件目录、选择视频边下载边播放，也可通过系统文件选择器打开本地视频。主窗口支持暂停、继续、前后 10 秒、拖动进度、音量、下载速度和进度。**视频显示在独立 mpv 窗口，尚未嵌入主窗口。**
 
-## 环境准备
+不需要账号，没有云服务、业务后端 API、AI、弹幕或自动匹配。字幕文件已分类，外挂字幕挂载尚未实现。插件目录只有扩展约定。
 
-- Node.js 22.12+，npm；提交 `package-lock.json`，后续安装使用 `npm ci`。
-- Rust stable（本次使用 1.98.1），通过 rustup 安装；`rust-toolchain.toml` 声明 rustfmt、clippy。
-- macOS：Xcode Command Line Tools，可运行 `xcode-select --install` 安装。
-- Windows：Microsoft C++ Build Tools 的“使用 C++ 的桌面开发”、WebView2，以及对应的 Rust MSVC 工具链。
-- Linux：GTK/WebKitGTK 等系统依赖。Ubuntu/Debian 示例：
+## 环境与启动
+
+需要 Node.js 22.12+、npm、Rust stable、Tauri 平台依赖和 mpv。SQLite 通过 bundled rusqlite 编译，无需数据库服务。本机验证环境：macOS arm64、Rust 1.98.1、mpv 0.40.0；Windows/Linux 尚未原生实测。
+
+- macOS：Xcode Command Line Tools；mpv 可用 `brew install --formula mpv` 安装。
+- Windows：Microsoft C++ Build Tools 的桌面 C++ 工具、WebView2、Rust MSVC 工具链；安装 mpv，将 mpv.exe 所在目录加入 PATH。
+- Linux：安装发行版的 GTK/WebKitGTK 开发依赖和 mpv。Ubuntu/Debian 示例：
 
   ```sh
-  sudo apt update
   sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev mpv
   ```
 
-各发行版及 Windows 安装详情见 [Tauri 官方环境准备](https://v2.tauri.app/start/prerequisites/)。
-本阶段无需安装 torrent engine、mpv 或 SQLite。
-
-若 Rust 已安装但终端提示找不到 `cargo`，macOS/Linux 当前会话执行：
-
-```sh
-source "$HOME/.cargo/env"
-```
-
-本次本机 rustup 使用 `--no-modify-path` 安装，没有改动 Shell 配置；新终端也需要上面的命令，或自行将 Cargo bin 目录加入 PATH。
-
-## 启动
-
-在项目根目录运行：
+平台准备详见 [Tauri 官方文档](https://v2.tauri.app/start/prerequisites/) 和 [mpv 安装说明](https://mpv.io/installation/)。
 
 ```sh
 npm ci
+# macOS/Linux：如果 cargo 不在 PATH，先执行
+source "$HOME/.cargo/env"
 npm run desktop:dev
 ```
 
-Tauri 会自动启动绑定 `127.0.0.1:1420` 的 Vite 开发服务、编译 Rust，并打开原生窗口。
-首次 Rust 构建需要下载和编译依赖，耗时明显长于后续构建。
-开发服务仅用于本地前端开发；打包后使用内嵌静态资源，不运行业务 HTTP 服务。
+Tauri 自动启动本地 Vite 并打开原生窗口，首次 Rust 编译较慢。终端按 Ctrl+C 结束开发任务。仅运行 `npm run dev` 是浏览器预览，无法调用原生播放器能力。
 
-窗口中的“运行状态”通过真实 IPC 命令 `get_runtime_info` 显示 Rust 返回的版本、系统和架构。
-点击“重新检查”可重复验证调用。页面没有模拟成功数据。
-关闭终端任务使用 `Ctrl+C`。
+mpv 搜索顺序：环境变量 `BILI_DM_MPV_PATH` 指定的绝对路径 → 应用资源目录 bin/mpv（Windows 为 mpv.exe）→ PATH → macOS Homebrew / Linux 常见路径。当前安装包不内置 mpv，缺失时界面提示安装。例如：
 
-只预览前端时可运行 `npm run dev` 并打开 `http://127.0.0.1:1420`。
-浏览器无法访问 Tauri IPC，会明确提示启动桌面应用，这不代表 Rust 已通过验证。
-不要同时启动独立 Vite 和 `desktop:dev`；端口被占用时先停止对应任务。
+```sh
+BILI_DM_MPV_PATH=/opt/homebrew/bin/mpv npm run desktop:dev
+```
+
+## 使用方法
+
+1. 粘贴完整 `magnet:?xt=urn:btih:...`，点击“加载目录”。只读取 metadata，不下载正文。支持取消；120 秒没有取得目录时返回可重试错误。
+2. 目录显示路径、大小和视频/字幕/其他类型，默认选最大非空视频。可手动改选后点击“播放选中视频”。自然排序不改变引擎文件 index。
+3. 视频在 mpv 窗口播放，主界面显示缓冲、时长和下载状态。随机拖动会向引擎请求对应字节范围，不等待完整下载。
+4. “停止”停止播放并暂停当前下载；切换视频释放旧数据源。关闭 mpv 窗口后下一次状态轮询会停止下载。退出主应用关闭 mpv 和 torrent 会话。
+5. “打开本地视频”使用系统文件选择器，无需磁力即可播放本地文件。
+6. “最近加载的磁力”保留最近 20 条任务入口；点击重新解析。重启只读取本地历史，不自动下载或播放。
+
+视频候选：mp4、mkv、avi、webm、mov、m4v、ts、m2ts，扩展名不区分大小写。候选识别不保证文件可解码，实际播放取决于内容和 mpv。
+
+外部字幕识别：srt、ass、ssa、vtt、sub、idx。本版没有“磁力/本地视频 + 磁力/本地字幕”挂载操作；容器内自带字幕由 mpv 自身处理。
+
+## 本地数据
+
+操作系统目录由 Tauri 注入，没有写死个人路径：
+
+- SQLite：`app_data_dir()/library.sqlite3`，macOS 为 `~/Library/Application Support/dev.bilidm.player/library.sqlite3`。
+- 正文缓存：`app_cache_dir()/torrents/<info-hash>/`，macOS 位于 `~/Library/Caches/dev.bilidm.player/torrents/`。
+- mpv IPC：Unix 临时私有目录内的 socket，Windows 随机 named pipe；退出释放。
+
+迁移使用 PRAGMA user_version，当前 schema 为 1。torrent_tasks 保存 torrent_id、magnet_uri、created_at、status，以及名称、目录快照、更新时间；media 保存 id、path、filename、duration，以及可选 torrent/file 引用。时长在 mpv 读取成功后保存。解析失败的链接不保存成任务。
+
+视频缓存保留用于重新播放时校验复用，暂无自动清理或管理页面。**任务历史不等于离线 metadata 缓存**：重启后播放磁力仍需重新解析节点。清理缓存前退出应用；数据库和正文缓存可独立管理。
+
+## 目录与架构
+
+```text
+src/frontend/
+  components/       输入、目录、控制面板、历史等展示组件
+  pages/            页面组合
+  hooks/            异步状态、串行轮询、操作互斥
+  services/         用例与命令调用
+  types/            IPC DTO
+  lib/              IPC、错误和格式化
+  stores/           跨页面状态预留
+src-tauri/src/
+  commands/         Tauri 参数和系统对话框适配
+  core/             AppService / PlaybackService 编排
+  torrent/          TorrentEngine 接口、librqbit 适配
+  media/            文件分类、单范围 HTTP 字节流
+  player/           PlayerBackend 接口、mpv IPC 适配
+  database/         LibraryRepository、SQLite、版本化迁移
+  lib.rs            依赖装配、生命周期
+  main.rs           启动错误处理
+plugins/README.md   扩展约定，没有插件运行时
+```
+
+调用方向：**Frontend → Service → Tauri Command → Rust Core → 接口适配器**。视频字节走 librqbit seekable reader → 私有 loopback Range 流 → mpv，不经过 JSON IPC。媒体传输只监听 127.0.0.1 随机端口，随机 token 限定选中文件，不提供业务管理 API 或任意路径访问。详见 [架构说明](docs/architecture.md)。
 
 ## 检查与构建
 
 ```sh
-# TypeScript strict、Rust 格式、Clippy（警告视为错误）
-npm run check
-
-# 前端类型检查及生产资源构建
-npm run build
-
-# 构建当前操作系统的桌面安装包
+npm run check       # TS strict、rustfmt、Clippy -D warnings
+npm run rust:test   # 7 个单元测试、SQLite 3 个集成测试、HTTP Range 集成测试
+npm run build       # 前端生产构建
 npm run desktop:build
-
-# 仅构建桌面二进制，用于本地验证，不生成安装包
-npm run tauri -- build --no-bundle
+# macOS 仅生成 .app（本次交付使用）
+npm run desktop:build -- --bundles app
 ```
 
-也可单独运行 `npm run typecheck`、`npm run rust:fmt`、`npm run rust:clippy`。
-修复 Rust 格式使用 `cargo fmt --manifest-path src-tauri/Cargo.toml --all`。
-`Cargo.lock` 必须提交，Clippy 使用 `--locked`。
-Rust 对 `unwrap()` 和 `expect()` 启用 Clippy deny；应用启动失败会输出错误并返回非零退出码。
-前端处理 IPC 拒绝、非桌面环境和 8 秒超时，支持重新检查；超时只结束等待，不取消已提交的 Rust 工作。
+产物在 src-tauri/target/release/bundle/，各平台应在目标系统构建验证。尚未配置发布签名、公证或自动更新。提交了 npm/Cargo lock；Clippy 禁止 unwrap() / expect()。
 
-打包文件位于 `src-tauri/target/release/bundle/`。各平台分别在目标系统上构建和验证。
-Phase 1 不配置发布签名、macOS 公证或自动更新；当前应用标识 `dev.bilidm.player` 是开发标识。
-如需更换图标，修改 `assets/app-icon.svg` 后运行：
+真实引擎与播放器验证命令（需要 mpv，网络结果取决于节点）：
 
 ```sh
-npm run tauri -- icon assets/app-icon.svg
+cargo run --manifest-path src-tauri/Cargo.toml --example inspect_magnet -- 'magnet:?...'
+cargo run --manifest-path src-tauri/Cargo.toml --example playback_smoke -- 'magnet:?...' 10
+cargo run --manifest-path src-tauri/Cargo.toml --example playback_smoke -- /absolute/path/video.mp4
 ```
 
-图标命令同时生成的 Android/iOS 目录已忽略，当前仅维护桌面图标。
+inspect_magnet 只取 metadata。playback_smoke 验证播放、暂停、25% 音量、跳到中段、继续和停止；最后一个数字是可选的引擎文件 index。例子使用临时缓存，退出后停止会话并清理。本次用户提供的两个磁力都实测通过：
 
-## 目录与职责
-
-```text
-src/
-  main.tsx                      React 入口
-  frontend/
-    App.tsx                     应用组合
-    pages/                      页面组合
-    components/                 展示组件
-    hooks/                      页面状态与生命周期
-    stores/                     预留跨页面状态（当前无需全局状态库）
-    services/                   前端用例服务
-    lib/desktop.ts              Tauri IPC 唯一入口、超时与错误整理
-    types/                      前后端传输类型
-    styles.css                  基础界面样式
-src-tauri/
-  src/
-    main.rs                     桌面进程入口与启动错误处理
-    lib.rs                      依赖装配、状态注册、命令注册
-    commands/                   Tauri 命令适配
-    core/                       独立于 Tauri 的 Rust 应用服务
-    torrent/                    预留 torrent engine 边界
-    media/                      预留媒体模型与文件识别
-    player/                     预留播放器接口与 mpv 适配
-    database/                   预留 SQLite 仓储与迁移
-  capabilities/                 主窗口能力配置
-  icons/                        桌面平台图标
-  Cargo.toml / Cargo.lock        Rust 依赖与锁文件
-  tauri.conf.json                窗口、构建、CSP、打包配置
-plugins/README.md                未来扩展约定；无插件运行时
-docs/architecture.md            模块依赖与后续数据流约定
-docs/phase-1.md                 本阶段文件清单、验证记录、已知问题
-```
-
-调用方向：**Frontend → frontend service → Tauri Command → Rust Core service → 具体适配器**。
-当前真实用例为 `HomePage → useRuntimeInfo → runtimeService → desktop → get_runtime_info → AppService`。
-组件不直接调用 torrent、mpv、数据库或 Tauri。
-Tauri 启动层负责管理服务生命周期；Core 不引用 Tauri 类型。
-生产 CSP 限制资源到应用本身和本地 IPC；开发 CSP 额外允许 Vite 本地热更新。
-
-## 分阶段交付
-
-| 阶段 | 范围 | 状态 |
+| Info hash 前缀 | 目录 | 流式验证 |
 | --- | --- | --- |
-| Phase 1 | Tauri + React + Rust、IPC 验证、模块骨架、工程说明 | 当前交付 |
-| Phase 2 | torrent engine、磁力链接解析、metadata 与文件列表 | 已完成 |
-| Phase 3 | mp4/mkv/avi/webm/mov 识别、默认选择最大视频 | 未实现 |
-| Phase 4 | mpv/libmpv、边下载边播放、暂停和 seek | 未实现 |
-| Phase 5 | 播放器基础 UI、音量、进度、下载速度与进度 | 未实现 |
-| Phase 6 | SQLite torrent 任务、媒体持久化与迁移 | 未实现 |
+| b289ee90 | 12 个 MKV；选第 1 集（index 10） | 下载约 3.9% 开始播放；中段 seek 后约 9.2% |
+| e07ed741 | 1 个 MKV | 下载约 5.4% 开始播放；中段 seek 后约 12.8% |
 
-每一阶段单独提交并更新文件清单、架构说明、测试方法与已知问题。
-后续扩展允许弹幕、metadata、外部 Agent 的 `match.json`，Phase 1 仅保留边界，不实现插件系统。
+GUI 验证覆盖系统文件选择、暂停、磁力目录加载、改选和真实播放。这是 macOS 本机当次结果，不保证所有磁力可用或固定首帧等待时间。
 
-## Phase 1 手工验收
+## 分阶段记录
 
-1. 运行 `npm run desktop:dev`，确认原生窗口正常渲染，没有白屏。
-2. 确认“桌面服务已连接”及版本、系统、CPU 架构由 Rust 返回。
-3. 点击“重新检查”，确认恢复连接状态；调整窗口到最小尺寸，检查内容可用。
-4. 关闭桌面开发任务；运行 `npm run dev` 并用普通浏览器访问，确认显示桌面环境提示，不伪造成功状态。
-5. 运行 `npm run check` 和 `npm run tauri -- build --no-bundle`；构建后直接启动二进制，确认不依赖 Vite 仍能渲染和调用 Rust。
+| 阶段 | 记录 |
+| --- | --- |
+| Phase 1 | [工程初始化和 IPC](docs/phase-1.md) |
+| Phase 2 | [magnet 和 metadata](docs/phase-2.md) |
+| Phase 3 | [视频与字幕分类](docs/phase-3.md) |
+| Phase 4 | [mpv 与流式播放](docs/phase-4.md) |
+| Phase 5 | [目录选片和播放器 UI](docs/phase-5.md) |
+| Phase 6 | [SQLite 持久化](docs/phase-6.md) |
 
-本机实际完成哪些检查及平台限制，以 [Phase 1 报告](docs/phase-1.md) 为准。
+每阶段独立提交，报告包括修改文件、架构、测试方法和已知问题。
+
+## 当前限制与故障处理
+
+- 支持 BT v1 / hybrid btih magnet，纯 BT v2 暂不支持。无节点时可取消或等待超时重试。
+- 独立 mpv 窗口未嵌入 Tauri，mpv 尚未随安装包分发。Windows/Linux 的窗口、named pipe、依赖和打包需要验证。
+- 缓冲慢时查看速度和连接数；可停止后重新选择。IPC 超时只结束前端等待，不取消已提交命令；metadata 另有取消入口。
+- 一次播放一个视频；本地路径需 UTF-8。没有断点续播位置、缓存清理 UI 或完整任务队列。
+- 字幕挂载、弹幕、metadata、外部 match.json 读取和插件运行时为后续工作。

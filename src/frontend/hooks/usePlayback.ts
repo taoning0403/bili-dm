@@ -15,6 +15,10 @@ export function usePlayback() {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function poll() {
+      if (inFlight.current) {
+        if (active) timer = setTimeout(() => void poll(), 1_000);
+        return;
+      }
       const startedAt = revision.current;
       try {
         const next = await playerService.state();

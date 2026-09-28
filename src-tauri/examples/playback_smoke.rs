@@ -1,6 +1,7 @@
 //! Real mpv + local/torrent smoke test. Uses a temporary download directory.
 use bili_dm_lib::{
     core::playback_service::PlaybackService,
+    database::{sqlite::SqliteLibrary, LibraryRepository},
     player::{mpv::MpvBackend, PlayerControl},
     torrent::{rqbit::RqbitEngine, TorrentEngine},
 };
@@ -14,8 +15,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let engine = Arc::new(RqbitEngine::new(directory.path().to_owned()));
     let player = Arc::new(MpvBackend::new(PathBuf::new()));
-    let service = PlaybackService::new(engine.clone(), player);
-    let result = exercise(&service, engine.as_ref(), input).await;
+    let library = Arc::new(SqliteLibrary::open(
+        &directory.path().join("library.sqlite3"),
+    )?);
+    let service = PlaybackService::new(engine.clone(), player, library.clone());
+    let result = exercise(&service, engine.as_ref(), library.as_ref(), input).await;
     service.shutdown().await;
     result
 }
@@ -23,10 +27,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn exercise(
     service: &PlaybackService,
     engine: &RqbitEngine,
+    library: &SqliteLibrary,
     input: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if input.starts_with("magnet:") {
         let catalog = engine.resolve(&input).await?;
+        library.save_catalog(&input, &catalog).await?;
         let index = std::env::args()
             .nth(2)
             .map(|index| index.parse::<usize>())

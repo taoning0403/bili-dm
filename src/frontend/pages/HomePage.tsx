@@ -4,18 +4,29 @@ import { useTorrent } from "../hooks/useTorrent";
 import { FileCatalog } from "../components/FileCatalog";
 import { PlayerControls } from "../components/PlayerControls";
 import { usePlayback } from "../hooks/usePlayback";
+import { useState } from "react";
+import { useRecentTorrents } from "../hooks/useRecentTorrents";
+import { RecentTorrents } from "../components/RecentTorrents";
 
 export function HomePage() {
   const torrent = useTorrent();
   const playback = usePlayback();
+  const recent = useRecentTorrents(torrent.catalog, playback.state?.media?.torrentId);
+  const [magnet, setMagnet] = useState("");
+  async function load(value: string) {
+    setMagnet(value);
+    await torrent.load(value);
+  }
 
   return (
     <div className="app-shell">
       <AppHeader onOpenLocal={playback.openLocal} busy={playback.busy} />
       <main>
-        <PlayerControls key={playback.state?.media?.title ?? "empty"} state={playback.state} busy={playback.busy} onControl={playback.control} />
+        <PlayerControls key={`${playback.state?.media?.source}:${playback.state?.media?.localPath ?? playback.state?.media?.torrentId}:${playback.state?.media?.fileIndex}`} state={playback.state} busy={playback.busy} onControl={playback.control} />
         {playback.error && <p className="error-message" role="alert">{playback.error}</p>}
-        <MagnetInput loading={torrent.loading} onLoad={torrent.load} onCancel={torrent.cancel} />
+        <MagnetInput magnet={magnet} onChange={setMagnet} loading={torrent.loading} onLoad={load} onCancel={torrent.cancel} />
+        {recent.error && <p className="error-message" role="alert">历史记录：{recent.error}</p>}
+        <RecentTorrents tasks={recent.tasks} disabled={torrent.loading} onLoad={load} />
         {torrent.loading && <p role="status">正在从节点读取元数据…</p>}
         {torrent.error && <p className="error-message" role="alert">{torrent.error}</p>}
         {torrent.catalog && <FileCatalog catalog={torrent.catalog} selected={torrent.selectedFile} onSelect={torrent.selectFile} />}

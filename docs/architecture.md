@@ -1,64 +1,52 @@
-# 模块边界
-
-## Phase 1 的实际实现
+# 当前架构（0.2.0）
 
 ```text
-React page / presentation components
-       ↓ hook（生命周期 / 连接状态）
-frontend/services/runtimeService.ts
-       ↓ frontend/lib/desktop.ts（IPC）
-Rust commands/runtime.rs
-       ↓ State<AppService>
-Rust core/app_service.rs
+React 页面 / 展示组件
+    ↓ hooks（异步状态、轮询、交互互斥）
+frontend/services → lib/desktop.ts（IPC、错误、超时）
+    ↓
+Tauri commands（参数 / 系统文件选择适配）
+    ↓
+AppService / PlaybackService（用例、生命周期、持久化编排）
+    ├── TorrentEngine → RqbitEngine
+    ├── PlayerBackend → MpvBackend
+    ├── LibraryRepository → SqliteLibrary
+    └── MediaServer → 单文件 HTTP Range
+
+视频字节：rqbit FileStream（AsyncRead + AsyncSeek）→ loopback → mpv
+本地播放：规范化路径 → mpv
 ```
 
-`main.rs` 处理进程结果，`lib.rs` 是装配入口，负责注册服务和命令。
-`AppService` 提供不依赖 Tauri 的运行信息；返回值按 camelCase 序列化。
-前端传输类型集中在 `types/runtime.ts`，修改 Rust DTO 时必须同步更新。
-当前命令只读编译期及平台常量，本身无可恢复业务错误；Tauri 启动和前端 IPC 失败均有错误处理。
-业务阶段引入的可失败命令使用 `Result<T, AppError>`，错误通过可序列化的 code/message 传输，组件只展示可理解的信息。
+lib.rs 是依赖装配入口，通过 Tauri 取得系统目录；Core 不引用 Tauri 类型。Command 不处理 SQL、torrent metadata 或 mpv JSON 命令。PlayerControls 只接收状态和回调，不依赖 torrent。
 
-`torrent`、`media`、`player`、`database` 是编译中的空模块，仅有职责文档。
-目前没有 engine、数据库连接、假实现、下载任务或插件加载器。
-不提前添加未经验证的异步 trait、引擎选型或全局状态库。
+## 模块契约
 
-## 后续阶段的接口方向（设计约定，尚未实现）
+- TorrentEngine：解析/取消 metadata、准备选中文件、可 seek reader、下载统计、暂停/退出。librqbit 类型只在适配器内。list-only 解析不下载正文；用户选片后启动下载，seek 通过 reader 调整 piece 需求。
+- media/files：扩展名分类、最大非空视频及稳定文件 index。UI 自然排序不改变文件身份。
+- PlayerBackend：媒体源、控制和快照。mpv 用 Unix socket / Windows named pipe JSON IPC；不理解 magnet 或数据库。
+- PlaybackService：一次一个播放会话，串行处理切换、控制和快照；停止撤销媒体源、暂停下载、更新状态；退出关闭子进程与会话。时长绑定同一媒体快照，成功读取后保存一次。
+- LibraryRepository：保存目录、媒体和任务状态，读取历史。SQLite 用 spawn_blocking 执行，连接互斥、外键、WAL、参数绑定及事务。迁移由 user_version 管理，拒绝更新版本 schema。
 
-- `torrent`：以引擎无关的任务 ID、文件描述、下载状态和可定位字节数据对外提供能力。引擎实现封装在该模块；不暴露具体引擎对象到命令或前端。
-- `media`：定义 `MediaIdentity`、媒体描述和文件选择策略。Phase 3 的扩展名和最大文件规则在这里实现，避免出现在 UI 中。
-- `player`：定义 `PlayerBackend` 接口，再提供 mpv/libmpv 适配。只接收 Core 提供的媒体源与播放指令，不解析 magnet、不操作 torrent 实例。
-- `core`：组合任务、媒体和播放器用例。负责资源关闭、取消与服务生命周期协调；通过接口依赖适配器，不让 Command 承担业务编排。
-- `database`：SQLite 连接、迁移及任务/媒体仓储。前端不得执行 SQL，迁移必须版本化。
+## 数据传输
 
-预期播放数据流：
+mpv 访问 http://127.0.0.1:<随机端口>/stream/<随机 token>。支持 GET/HEAD、单范围 Range、suffix ranges 与 416；seek 定位字节 reader。端点不接受任意磁盘路径；切换替换 token，停止后原 URL 返回 404。
 
-```text
-Torrent adapter → seekable media source → mpv adapter
-                        ↑
-                 Core playback service
-                        ↑
-                 Tauri Command / events
-                        ↑
-                    Frontend
-```
+该端点只是进程内部的媒体传输，不提供业务后端 API；前端不能用它管理任务。视频字节不经过 Tauri IPC。不存在账号、云服务或业务网络请求。
 
-随机拖动需要按所需范围请求数据并提升 piece 优先级，不能仅把未完整下载的文件路径交给 mpv 后宣称支持流式 seek。
-引擎和媒体源协议的选型在 Phase 2/4 实测后确定；视频内容不通过 JSON IPC 搬运。
-如果需要本机环回流媒体传输，它只能是进程内部媒体传输适配，不能引入云端或业务后端 API。
+## 持久化与身份
 
-## 持久化预留
+torrent_tasks 保存磁力、目录快照、创建时间与 ready/downloading/paused 状态；media 保存路径、文件名、可空时长及 torrent/file 引用。本地媒体以规范化绝对路径构造 ID，磁力媒体以 info hash + file index 构造 ID，路径表示为 torrent://<hash>/<index>。
 
-Phase 6 的最低数据模型为 torrent 任务（torrent_id、magnet_uri、created_at、status）和媒体（id、path、filename、duration）。
-缓存与数据库放入操作系统应用数据/缓存目录，通过启动层将路径传入服务，不能写死用户目录。
-未来 metadata、弹幕来源和匹配关系使用关联表及媒体 ID，避免把提供方字段直接混入播放核心。
-本阶段不创建表或数据库文件。
+重启将 downloading 恢复为 paused；读取历史不创建网络会话。内存 metadata 对象不持久化，重新播放需重新解析，正文缓存则校验复用。移动本地文件会形成新路径身份，未来内容去重应通过专门适配器实现。
 
-## 扩展边界
+## 字幕和未来扩展
 
-未来扩展以媒体身份作为输入，不依赖 `PlayerComponent` 或 torrent 引擎内部对象：
+FileKind::Subtitle 已识别外部字幕，当前 prepare_file 仍只接受 Video。后续分别提供视频源和字幕源，在 PlayerBackend 添加字幕挂载/移除操作；本地字幕用系统选择器，磁力字幕用独立下载/流源。**不能用当前唯一 active 视频槽加载字幕**，否则会中断视频。
 
-- 弹幕扩展：`MediaIdentity` → 带时间戳的弹幕流。
-- metadata 扩展：`MediaIdentity` → 标题、封面、简介。
-- 匹配配置适配：外部 Agent 生成 `match.json`，核心只读取并校验配置，不执行 AI 或自动匹配。
+未来以稳定媒体 ID 为输入，独立接口接入弹幕流、标题/封面/简介及外部 Agent 的 match.json。新增关联表保存 provider 与媒体关系，核心表不加入 Bilibili 或 AI 专有字段。当前没有插件扫描、安装、执行或自动匹配；约定见 plugins/README.md。
 
-未来实现时通过显式接口和装配入口连接；本阶段没有插件扫描、安装、热加载或执行能力。
+## 错误和验证
+
+统一 AppError { code, message }，command 返回 Result，前端显示错误。metadata 可取消且最长 120 秒，缓存初始化、播放打开、IPC 有独立时限。前端时限不等于后台取消。
+
+测试分层：纯文件/Range/magnet 校验、真实 loopback HTTP、SQLite 持久化/迁移/事务、真实 mpv/librqbit smoke、原生 GUI。平台验证以阶段报告为准。

@@ -15,9 +15,13 @@ pub fn run() -> tauri::Result<()> {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let cache = app.path().app_cache_dir()?.join("torrents");
+            let library = database::sqlite::SqliteLibrary::open(
+                &app.path().app_data_dir()?.join("library.sqlite3"),
+            )?;
             app.manage(AppService::new(
                 Arc::new(RqbitEngine::new(cache)),
                 Arc::new(player::mpv::MpvBackend::new(app.path().resource_dir()?)),
+                Arc::new(library),
             ));
             Ok(())
         })
@@ -28,7 +32,8 @@ pub fn run() -> tauri::Result<()> {
             commands::player::play_torrent,
             commands::player::open_local_video,
             commands::player::control_player,
-            commands::player::get_playback_state
+            commands::player::get_playback_state,
+            commands::library::recent_torrents
         ])
         .build(tauri::generate_context!())?;
     app.run(|handle, event| {
