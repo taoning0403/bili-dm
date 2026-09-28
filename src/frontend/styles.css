@@ -36,6 +36,32 @@ textarea:focus-visible { outline: 2px solid #a6dac3; }
 .file-kind.video { color: #a6d4ba; }
 .file-kind.subtitle { color: #d6c39b; }
 .file-size { width: 80px; text-align: right; white-space: nowrap; color: #a4aaa7; font-size: 12px; }
+.player-panel { background: #1b211e; border: 1px solid #39453e; border-radius: 12px; padding: 24px; }
+.now-playing { display: flex; gap: 16px; align-items: center; margin-bottom: 24px; }
+.playing-copy { flex: 1; min-width: 0; }
+.playing-copy h2 { overflow-wrap: anywhere; line-height: 1.6; margin: 4px 0 6px; }
+.playing-copy .muted { font-size: 12px; }
+.player-glyph { color: #a6d4ba; background: #2b3c32; width: 50px; height: 50px; border-radius: 12px; flex-shrink: 0; display: grid; place-items: center; }
+.playback-status { font-size: 12px; color: #a6d4ba; white-space: nowrap; }
+.timeline { display: flex; align-items: center; gap: 14px; color: #b7c4bc; font-variant-numeric: tabular-nums; font-size: 12px; }
+.timeline input { min-width: 0; flex: 1; }
+input[type="range"] { cursor: pointer; }
+.player-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 16px; }
+.player-buttons button { font-size: 12px; padding: 8px 12px; }
+.volume-control { display: flex; align-items: center; gap: 8px; margin-left: auto; color: #a4aaa7; font-size: 12px; }
+.volume-control input { width: 88px; }
+.volume-control span { min-width: 34px; }
+.download-status { border-top: 1px solid #344038; margin-top: 22px; padding-top: 18px; }
+.download-status > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: #a4aaa7; font-size: 12px; }
+.download-status progress { width: 100%; height: 6px; margin-top: 12px; accent-color: #b9ddca; }
+.catalog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.catalog-actions .muted { font-size: 12px; }
+.file-panel { max-height: 420px; overflow-y: auto; }
+@media (max-width: 680px) {
+  .volume-control { margin-left: 0; }
+  .now-playing { flex-wrap: wrap; }
+  .player-glyph { display: none; }
+}
 button:focus-visible { outline: 2px solid #a6dac3; outline-offset: 4px; }
 h1, h2, p { margin: 0; }
 

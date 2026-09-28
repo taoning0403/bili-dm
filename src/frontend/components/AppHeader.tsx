@@ -1,4 +1,4 @@
-export function AppHeader() {
+export function AppHeader({ onOpenLocal, busy }: { onOpenLocal: () => Promise<void>; busy: boolean }) {
   return (
     <header className="app-header">
       <div className="brand">
@@ -8,7 +8,7 @@ export function AppHeader() {
           <p className="brand-caption">本地媒体播放器</p>
         </div>
       </div>
-      <span className="phase-label">磁力目录</span>
+      <button onClick={() => void onOpenLocal()} disabled={busy}>打开本地视频</button>
     </header>
   );
 }

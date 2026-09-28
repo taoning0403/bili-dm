@@ -12,6 +12,9 @@ export async function invokeDesktop<T>(
     throw new Error("当前为浏览器预览。请运行 npm run desktop:dev 打开桌面应用。");
   }
 
+  // Native dialogs wait for the user; they must not expire after eight seconds.
+  if (timeoutMs === 0) return invoke<T>(command, args);
+
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   try {

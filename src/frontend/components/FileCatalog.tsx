@@ -7,7 +7,8 @@ interface Props { catalog: TorrentCatalog; selected: number | null; onSelect: (i
 
 function buildTree(files: TorrentFile[]): Directory {
   const root: Directory = { name: "", directories: new Map(), files: [] };
-  for (const file of files) {
+  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+  for (const file of sorted) {
     const components = file.path.split("/");
     let parent = root;
     for (const name of components.slice(0, -1)) {
