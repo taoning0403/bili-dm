@@ -1,199 +1,276 @@
 use super::{
-    executable::find_mpv, ipc::MpvConnection, PlayerBackend, PlayerControl, PlayerSnapshot,
+    native::Client, Chapter, MediaTrack, PlayerBackend, PlayerControl, PlayerSnapshot,
+    VideoViewport,
 };
 use crate::core::error::{AppError, AppResult};
 use async_trait::async_trait;
-use serde_json::json;
-use std::{path::PathBuf, process::Stdio, time::Duration};
-use tokio::{
-    process::{Child, Command},
-    sync::Mutex,
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
-struct RunningPlayer {
-    child: Child,
-    connection: MpvConnection,
-    _socket_dir: tempfile::TempDir,
+struct State {
+    client: Option<Client>,
+    viewport: VideoViewport,
 }
-
 pub struct MpvBackend {
-    resource_dir: PathBuf,
-    running: Mutex<Option<RunningPlayer>>,
+    state: Arc<Mutex<State>>,
+    library: PathBuf,
+    wid: Option<i64>,
 }
-
+pub fn runtime_directory(resources: &Path) -> PathBuf {
+    let bundled = resources.join("lib");
+    if bundled.join(library_name()).is_file() {
+        bundled
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib")
+    }
+}
+fn library_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "libmpv.dylib"
+    } else if cfg!(windows) {
+        "libmpv-2.dll"
+    } else {
+        "libmpv.so.2"
+    }
+}
 impl MpvBackend {
-    pub fn new(resource_dir: PathBuf) -> Self {
+    pub fn new(resources: PathBuf) -> Self {
+        Self::with_target(resources, None)
+    }
+    pub fn embedded(resources: PathBuf, wid: i64) -> Self {
+        Self::with_target(resources, Some(wid))
+    }
+    fn with_target(resources: PathBuf, wid: Option<i64>) -> Self {
         Self {
-            resource_dir,
-            running: Mutex::new(None),
+            state: Arc::new(Mutex::new(State {
+                client: None,
+                viewport: VideoViewport::default(),
+            })),
+            library: runtime_directory(&resources).join(library_name()),
+            wid,
         }
     }
-
-    async fn start(&self) -> AppResult<RunningPlayer> {
-        let executable = find_mpv(&self.resource_dir)?;
-        let socket_dir = tempfile::Builder::new()
-            .prefix("bili-mpv-")
-            .tempdir()
-            .map_err(AppError::io)?;
-        #[cfg(unix)]
-        let endpoint = socket_dir.path().join("ipc");
-        #[cfg(windows)]
-        let endpoint = PathBuf::from(format!(r"\\.\pipe\bili-dm-{}", uuid::Uuid::new_v4()));
-        let mut command = Command::new(executable);
-        command
-            .args([
-                "--no-config",
-                "--idle=yes",
-                "--force-window=yes",
-                "--keep-open=yes",
-                "--osc=yes",
-                "--terminal=no",
-                "--ytdl=no",
-                "--title=Bili DM · 视频",
-                "--cache=yes",
-                "--cache-secs=20",
-                "--demuxer-max-bytes=64MiB",
-                "--network-timeout=120",
-            ])
-            .arg(format!("--input-ipc-server={}", endpoint.to_string_lossy()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x08000000);
-        let mut child = command
-            .spawn()
-            .map_err(|error| AppError::new("MPV_START", format!("无法启动 mpv：{error}")))?;
-        let started = std::time::Instant::now();
-        loop {
-            if let Some(status) = child.try_wait().map_err(AppError::io)? {
-                return Err(AppError::new(
-                    "MPV_START",
-                    format!("mpv 启动后退出：{status}"),
-                ));
-            }
-            if let Ok(connection) = MpvConnection::connect(&endpoint).await {
-                return Ok(RunningPlayer {
-                    child,
-                    connection,
-                    _socket_dir: socket_dir,
-                });
-            }
-            if started.elapsed() > Duration::from_secs(10) {
-                let _ = child.kill().await;
-                return Err(AppError::new(
-                    "MPV_START",
-                    "10 秒内无法连接 mpv，请检查安装。",
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(40)).await;
-        }
+    async fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut State) -> AppResult<T> + Send + 'static,
+    ) -> AppResult<T> {
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| AppError::new("PLAYER", "播放器状态锁不可用。"))?;
+            work(&mut state)
+        })
+        .await
+        .map_err(|e| AppError::new("PLAYER", e.to_string()))?
     }
 }
-
+fn margins(client: &mut Client, view: VideoViewport) -> AppResult<()> {
+    for (name, value) in [
+        ("left", view.left),
+        ("right", view.right),
+        ("top", view.top),
+        ("bottom", view.bottom),
+    ] {
+        client.set(&format!("video-margin-ratio-{name}"), value)?;
+    }
+    Ok(())
+}
 #[async_trait]
 impl PlayerBackend for MpvBackend {
-    async fn load(&self, source: &str) -> AppResult<()> {
-        let mut guard = self.running.lock().await;
-        if let Some(running) = guard.as_mut() {
-            if running.child.try_wait().map_err(AppError::io)?.is_some() {
-                *guard = None;
+    async fn load(&self, source: &str, start: f64) -> AppResult<()> {
+        let (source, path, wid) = (source.to_owned(), self.library.clone(), self.wid);
+        self.run(move |state| {
+            if !start.is_finite() || start < 0.0 {
+                return Err(AppError::new("PLAYER_ARGUMENT", "无效的续播位置。"));
             }
-        }
-        if guard.is_none() {
-            *guard = Some(self.start().await?);
-        }
-        let running = guard
-            .as_mut()
-            .ok_or_else(|| AppError::new("MPV_START", "播放器未就绪。"))?;
-        running.connection.last_error = None;
-        running
-            .connection
-            .request(json!(["set_property", "pause", false]))
-            .await?;
-        running
-            .connection
-            .request(json!(["loadfile", source, "replace"]))
-            .await?;
-        Ok(())
-    }
-
-    async fn control(&self, control: PlayerControl) -> AppResult<()> {
-        let command = match control {
-            PlayerControl::Pause { paused } => json!(["set_property", "pause", paused]),
-            PlayerControl::Seek { seconds } if seconds.is_finite() && seconds >= 0.0 => {
-                json!(["seek", seconds, "absolute+exact"])
+            if state.client.is_none() {
+                state.client = Some(Client::open(&path, wid)?);
             }
-            PlayerControl::Volume { volume }
-                if volume.is_finite() && (0.0..=100.0).contains(&volume) =>
-            {
-                json!(["set_property", "volume", volume])
-            }
-            PlayerControl::Stop => json!(["stop"]),
-            _ => {
-                return Err(AppError::new(
-                    "INVALID_CONTROL",
-                    "播放位置或音量超出有效范围。",
-                ))
-            }
-        };
-        let mut guard = self.running.lock().await;
-        if let Some(running) = guard.as_mut() {
-            running.connection.request(command).await?;
-        } else if !matches!(control, PlayerControl::Stop) {
-            return Err(AppError::new("NO_PLAYER", "请先打开视频。"));
-        }
-        Ok(())
-    }
-
-    async fn snapshot(&self) -> AppResult<PlayerSnapshot> {
-        let mut guard = self.running.lock().await;
-        let Some(running) = guard.as_mut() else {
-            return Ok(PlayerSnapshot::default());
-        };
-        if running.child.try_wait().map_err(AppError::io)?.is_some() {
-            *guard = None;
-            return Ok(PlayerSnapshot::default());
-        }
-        let ipc = &mut running.connection;
-        let idle = ipc.property("idle-active").await?.as_bool().unwrap_or(true);
-        let position = ipc.property("time-pos").await?.as_f64().unwrap_or(0.0);
-        let duration = ipc.property("duration").await?.as_f64().unwrap_or(0.0);
-        let paused = ipc.property("pause").await?.as_bool().unwrap_or(false);
-        let volume = ipc.property("volume").await?.as_f64().unwrap_or(100.0);
-        let buffering = ipc
-            .property("paused-for-cache")
-            .await?
-            .as_bool()
-            .unwrap_or(false);
-        let ended = ipc
-            .property("eof-reached")
-            .await?
-            .as_bool()
-            .unwrap_or(false);
-        Ok(PlayerSnapshot {
-            running: true,
-            loaded: !idle && duration > 0.0,
-            paused,
-            position,
-            duration,
-            volume,
-            buffering,
-            ended,
-            error: ipc.last_error.clone(),
+            let client = state
+                .client
+                .as_mut()
+                .ok_or_else(|| AppError::new("PLAYER", "播放器未就绪。"))?;
+            client.drain_events();
+            client.loaded = false;
+            client.last_error = None;
+            margins(client, state.viewport)?;
+            client.set("pause", "no")?;
+            client.set("aid", "auto")?;
+            client.set("sid", "auto")?;
+            client.command(&[
+                "loadfile",
+                &source,
+                "replace",
+                "-1",
+                &format!("start={start}"),
+            ])
         })
+        .await
     }
-
-    async fn shutdown(&self) {
-        if let Some(mut running) = self.running.lock().await.take() {
-            let _ = running.connection.request(json!(["quit"])).await;
-            if tokio::time::timeout(Duration::from_secs(2), running.child.wait())
-                .await
-                .is_err()
-            {
-                let _ = running.child.kill().await;
+    async fn add_subtitle(&self, source: &str, title: &str) -> AppResult<()> {
+        let (source, title) = (source.to_owned(), title.to_owned());
+        self.run(move |state| {
+            let client = state
+                .client
+                .as_mut()
+                .ok_or_else(|| AppError::new("NO_PLAYER", "请先打开视频。"))?;
+            client.command(&["sub-add", &source, "auto", &title])
+        })
+        .await
+    }
+    async fn control(&self, control: PlayerControl) -> AppResult<()> {
+        self.run(move |state| {
+            let Some(client) = state.client.as_mut() else {
+                return if matches!(control, PlayerControl::Stop) {
+                    Ok(())
+                } else {
+                    Err(AppError::new("NO_PLAYER", "请先打开视频。"))
+                };
+            };
+            match control {
+                PlayerControl::Pause { paused } => {
+                    client.set("pause", if paused { "yes" } else { "no" })
+                }
+                PlayerControl::Seek { seconds } if seconds.is_finite() && seconds >= 0.0 => {
+                    client.command(&["seek", &seconds.to_string(), "absolute+exact"])
+                }
+                PlayerControl::Volume { volume }
+                    if volume.is_finite() && (0.0..=100.0).contains(&volume) =>
+                {
+                    client.set("volume", volume)
+                }
+                PlayerControl::Mute { muted } => {
+                    client.set("mute", if muted { "yes" } else { "no" })
+                }
+                PlayerControl::Speed { speed }
+                    if speed.is_finite() && (0.25..=4.0).contains(&speed) =>
+                {
+                    client.set("speed", speed)
+                }
+                PlayerControl::AudioTrack { id } if id >= 0 => {
+                    client.set("aid", if id == 0 { "no".into() } else { id.to_string() })
+                }
+                PlayerControl::SubtitleTrack { id } if id >= 0 => {
+                    client.set("sid", if id == 0 { "no".into() } else { id.to_string() })
+                }
+                PlayerControl::SubtitleDelay { seconds }
+                    if seconds.is_finite() && seconds.abs() <= 600.0 =>
+                {
+                    client.set("sub-delay", seconds)
+                }
+                PlayerControl::AudioDelay { seconds }
+                    if seconds.is_finite() && seconds.abs() <= 600.0 =>
+                {
+                    client.set("audio-delay", seconds)
+                }
+                PlayerControl::FrameStep { backwards } => client.command(&[if backwards {
+                    "frame-back-step"
+                } else {
+                    "frame-step"
+                }]),
+                PlayerControl::Stop => {
+                    client.command(&["stop"])?;
+                    client.loaded = false;
+                    client.last_error = None;
+                    Ok(())
+                }
+                _ => Err(AppError::new("INVALID_CONTROL", "播放器参数超出有效范围。")),
             }
+        })
+        .await
+    }
+    async fn viewport(&self, viewport: VideoViewport) -> AppResult<()> {
+        if [viewport.left, viewport.right, viewport.top, viewport.bottom]
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+            || viewport.left + viewport.right >= 1.0
+            || viewport.top + viewport.bottom >= 1.0
+        {
+            return Err(AppError::new("INVALID_VIEWPORT", "无效的视频区域。"));
         }
+        self.run(move |state| {
+            state.viewport = viewport;
+            if let Some(client) = &mut state.client {
+                margins(client, viewport)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+    async fn snapshot(&self) -> AppResult<PlayerSnapshot> {
+        self.run(|state| {
+            let Some(client) = &mut state.client else {
+                return Ok(PlayerSnapshot::default());
+            };
+            client.drain_events();
+            let number =
+                |key| -> AppResult<f64> { Ok(client.property(key)?.as_f64().unwrap_or(0.0)) };
+            let flag =
+                |key| -> AppResult<bool> { Ok(client.property(key)?.as_bool().unwrap_or(false)) };
+            let tracks = client
+                .property("track-list")?
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|t| MediaTrack {
+                    id: t["id"].as_i64().unwrap_or_default(),
+                    kind: t["type"].as_str().unwrap_or_default().into(),
+                    title: t["title"].as_str().unwrap_or_default().into(),
+                    language: t["lang"].as_str().unwrap_or_default().into(),
+                    codec: t["codec"].as_str().unwrap_or_default().into(),
+                    selected: t["selected"].as_bool().unwrap_or(false),
+                    external: t["external"].as_bool().unwrap_or(false),
+                })
+                .collect();
+            let chapters = client
+                .property("chapter-list")?
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(index, c)| Chapter {
+                    title: c["title"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("章节 {}", index + 1)),
+                    time: c["time"].as_f64().unwrap_or_default(),
+                })
+                .collect();
+            Ok(PlayerSnapshot {
+                running: true,
+                loaded: client.loaded,
+                paused: flag("pause")?,
+                buffering: flag("paused-for-cache")?,
+                ended: flag("eof-reached")?,
+                position: number("time-pos")?,
+                duration: number("duration")?,
+                volume: number("volume")?,
+                muted: flag("mute")?,
+                speed: number("speed")?,
+                subtitle_delay: number("sub-delay")?,
+                audio_delay: number("audio-delay")?,
+                cache_seconds: number("demuxer-cache-duration")?,
+                decoder: client
+                    .property("hwdec-current")?
+                    .as_str()
+                    .unwrap_or("no")
+                    .into(),
+                tracks,
+                chapters,
+                error: client.last_error.clone(),
+            })
+        })
+        .await
+    }
+    async fn shutdown(&self) {
+        let _ = self
+            .run(|state| {
+                state.client.take();
+                Ok(())
+            })
+            .await;
     }
 }

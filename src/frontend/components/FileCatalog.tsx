@@ -46,7 +46,7 @@ export function FileCatalog({ catalog, selected, onSelect }: Props) {
   return <section className="file-panel" aria-label="磁力文件目录">
     <h2>{catalog.name}</h2>
     <p className="muted">{catalog.files.length} 个文件 · {videos} 个视频 · {subtitles} 个字幕</p>
-    {!videos && <p className="error-message">没有识别到支持的视频文件。字幕文件已保留在目录中，挂载功能稍后接入。</p>}
+    {!videos && <p className="error-message">没有识别到支持的视频文件。</p>}
     <FileRows directory={tree} selected={selected} onSelect={onSelect} />
   </section>;
 }

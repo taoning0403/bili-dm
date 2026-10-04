@@ -21,4 +21,21 @@ pub struct DownloadStats {
     pub peers: u32,
     pub state: String,
     pub error: Option<String>,
+    pub buffered: Vec<BufferedRange>,
+    pub selected_files: Vec<usize>,
+    pub prefetch: Option<PrefetchStats>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BufferedRange {
+    pub start: f64,
+    pub end: f64,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefetchStats {
+    pub file_index: usize,
+    pub downloaded: u64,
+    pub total: u64,
 }

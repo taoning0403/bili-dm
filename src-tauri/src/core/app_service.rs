@@ -19,7 +19,7 @@ pub struct RuntimeInfo {
 /// not in commands or UI components.
 pub struct AppService {
     pub torrent: Arc<dyn TorrentEngine>,
-    pub playback: super::playback_service::PlaybackService,
+    pub playback: Arc<super::playback_service::PlaybackService>,
     library: Arc<dyn LibraryRepository>,
 }
 
@@ -30,11 +30,11 @@ impl AppService {
         library: Arc<dyn LibraryRepository>,
     ) -> Self {
         Self {
-            playback: super::playback_service::PlaybackService::new(
+            playback: Arc::new(super::playback_service::PlaybackService::new(
                 torrent.clone(),
                 player,
                 library.clone(),
-            ),
+            )),
             torrent,
             library,
         }
@@ -48,6 +48,14 @@ impl AppService {
 
     pub async fn recent_torrents(&self) -> AppResult<Vec<TorrentRecord>> {
         self.library.recent_torrents().await
+    }
+
+    pub async fn import_torrent(&self, bytes: Vec<u8>) -> AppResult<TorrentCatalog> {
+        let catalog = self.torrent.import_torrent(bytes).await?;
+        self.library
+            .save_catalog(&format!("magnet:?xt=urn:btih:{}", catalog.id), &catalog)
+            .await?;
+        Ok(catalog)
     }
 
     pub fn runtime_info(&self) -> RuntimeInfo {

@@ -1,138 +1,91 @@
 # Bili DM
 
-本地优先的桌面媒体播放器，当前版本 **0.2.0**。使用 Tauri 2、React、TypeScript strict、Vite、Rust；librqbit 负责 torrent，mpv 负责播放，SQLite 保存任务和媒体。
+本地优先的桌面媒体播放器，当前版本 **0.3.0**。磁力播放链路参考 [Frame Player](https://github.com/risenxxx/frame-player/tree/e9767259d5f5ca25a5b2a5951b1ebc80c702ea73) 重新实现：Tauri 2 + React + Rust，librqbit 负责 BT，内嵌 libmpv 负责解码和显示，SQLite 保存历史与续播进度。
 
-可粘贴磁力链接、读取文件目录、选择视频边下载边播放，也可通过系统文件选择器打开本地视频。主窗口支持暂停、继续、前后 10 秒、拖动进度、音量、下载速度和进度。**视频显示在独立 mpv 窗口，尚未嵌入主窗口。**
-
-不需要账号，没有云服务、业务后端 API、AI、弹幕或自动匹配。字幕文件已分类，外挂字幕挂载尚未实现。插件目录只有扩展约定。
+视频直接显示在应用主窗口。支持磁力链接、种子文件、本地视频、自然排序播放队列、自动连播、下一集预取、断点续播、外挂字幕、音轨切换、倍速、章节、逐帧及全屏。播放器运行库随 macOS 应用包携带，不再启动外部 mpv 进程。
 
 ## 环境与启动
 
-需要 Node.js 22.12+、npm、Rust stable、Tauri 平台依赖和 mpv。SQLite 通过 bundled rusqlite 编译，无需数据库服务。本机验证环境：macOS arm64、Rust 1.98.1、mpv 0.40.0；Windows/Linux 尚未原生实测。
-
-- macOS：Xcode Command Line Tools；mpv 可用 `brew install --formula mpv` 安装。
-- Windows：Microsoft C++ Build Tools 的桌面 C++ 工具、WebView2、Rust MSVC 工具链；安装 mpv，将 mpv.exe 所在目录加入 PATH。
-- Linux：安装发行版的 GTK/WebKitGTK 开发依赖和 mpv。Ubuntu/Debian 示例：
-
-  ```sh
-  sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev mpv
-  ```
-
-平台准备详见 [Tauri 官方文档](https://v2.tauri.app/start/prerequisites/) 和 [mpv 安装说明](https://mpv.io/installation/)。
+已验证平台：macOS Apple Silicon。需要 Node.js 22.12+、npm、Rust stable、Xcode Command Line Tools。SQLite 随 Rust 构建，libmpv 通过固定版本和 SHA-256 校验的脚本准备：
 
 ```sh
 npm ci
-# macOS/Linux：如果 cargo 不在 PATH，先执行
-source "$HOME/.cargo/env"
+source "$HOME/.cargo/env"   # cargo 已在 PATH 时可省略
+npm run player:setup
 npm run desktop:dev
 ```
 
-Tauri 自动启动本地 Vite 并打开原生窗口，首次 Rust 编译较慢。终端按 Ctrl+C 结束开发任务。仅运行 `npm run dev` 是浏览器预览，无法调用原生播放器能力。
+运行库下载到 src-tauri/lib，约 48 MiB，已从 Git 排除。macOS 使用支持 NSView 嵌入的 mpv 0.41.0；普通 Homebrew mpv 不能直接代替这一构建。运行库来源、构建补丁及许可证见 [第三方说明](THIRD-PARTY-NOTICES.md)。
 
-mpv 搜索顺序：环境变量 `BILI_DM_MPV_PATH` 指定的绝对路径 → 应用资源目录 bin/mpv（Windows 为 mpv.exe）→ PATH → macOS Homebrew / Linux 常见路径。当前安装包不内置 mpv，缺失时界面提示安装。例如：
+Windows/Linux 尚未完成原生验证，也没有自动运行库安装脚本。适配器预留 Win32/X11 窗口句柄；如自行移植，须在 src-tauri/lib 放置 libmpv-2.dll 或 libmpv.so.2 及其依赖，并验证透明 WebView、窗口叠放和打包。Wayland 嵌入暂不支持。
 
-```sh
-BILI_DM_MPV_PATH=/opt/homebrew/bin/mpv npm run desktop:dev
-```
+仅运行 npm run dev 是浏览器预览，无法验证 Tauri 命令、BT 引擎或原生画面。
 
 ## 使用方法
 
-1. 粘贴完整 `magnet:?xt=urn:btih:...`，点击“加载目录”。只读取 metadata，不下载正文。支持取消；120 秒没有取得目录时返回可重试错误。
-2. 目录显示路径、大小和视频/字幕/其他类型，默认选最大非空视频。可手动改选后点击“播放选中视频”。自然排序不改变引擎文件 index。
-3. 视频在 mpv 窗口播放，主界面显示缓冲、时长和下载状态。随机拖动会向引擎请求对应字节范围，不等待完整下载。
-4. “停止”停止播放并暂停当前下载；切换视频释放旧数据源。关闭 mpv 窗口后下一次状态轮询会停止下载。退出主应用关闭 mpv 和 torrent 会话。
-5. “打开本地视频”使用系统文件选择器，无需磁力即可播放本地文件。
-6. “最近加载的磁力”保留最近 20 条任务入口；点击重新解析。重启只读取本地历史，不自动下载或播放。
+1. 粘贴 magnet 并加载目录，或点击“打开种子”选择 .torrent。解析只取得元数据，不下载整季正文；磁力解析可取消，120 秒超时。
+2. 视频按文件名自然排序，默认选第一集，保留引擎的真实文件 index。点击“播放选中视频”后只选择当前视频及匹配字幕。
+3. 视频通过私有 localhost HTTP Range 流送入 libmpv。拖动进度时，rqbit 的读取优先级跟随所请求的字节范围，无需下载完整文件。
+4. 播放队列支持切集、自动连播、单集循环和列表循环。当前视频完整下载后才预取一个后续视频，可随时关闭预取。
+5. 相同文件名或带语言后缀的字幕自动下载并挂载；单视频种子会匹配其字幕文件。也可在“音轨 / 字幕”中手动加载本地字幕、选轨或调整延迟。
+6. 续播位置每 5 秒以及控制、切集、停止、退出时保存。已播完、开头不足 3 秒、距离结尾不足 5 秒的文件重新从头播放。
+7. 停止会撤销媒体 URL、取消等待读取并暂停下载。重启只显示历史，须主动选择播放才会连接 BT 网络。
 
-视频候选：mp4、mkv、avi、webm、mov、m4v、ts、m2ts，扩展名不区分大小写。候选识别不保证文件可解码，实际播放取决于内容和 mpv。
+进度条浅色区域表示已校验分片，按文件字节比例估算时间位置；容器的可变码率会使该估算与真实时间有所偏差。libmpv 的“缓冲秒数”另行显示。
 
-外部字幕识别：srt、ass、ssa、vtt、sub、idx。本版没有“磁力/本地视频 + 磁力/本地字幕”挂载操作；容器内自带字幕由 mpv 自身处理。
+| 操作 | 快捷键 |
+| --- | --- |
+| 播放 / 暂停 | Space / K，单击画面 |
+| 前后跳转 10 秒 / 1 秒 | ← → / Shift + ← → |
+| 音量 / 静音 | ↑ ↓ / M |
+| 上一集 / 下一集 | PageUp / PageDown |
+| 前后逐帧 | , / . |
+| 全屏 / 退出 | F、双击画面 / Escape |
 
-## 本地数据
+视频候选：mp4、mkv、avi、webm、mov、m4v、ts、m2ts。字幕：srt、ass、ssa、vtt、sub、idx；自动外挂字幕限制为每个 20 MiB。候选扩展名不保证实际内容能够解码。
 
-操作系统目录由 Tauri 注入，没有写死个人路径：
+## 数据与升级
 
-- SQLite：`app_data_dir()/library.sqlite3`，macOS 为 `~/Library/Application Support/dev.bilidm.player/library.sqlite3`。
-- 正文缓存：`app_cache_dir()/torrents/<info-hash>/`，macOS 位于 `~/Library/Caches/dev.bilidm.player/torrents/`。
-- mpv IPC：Unix 临时私有目录内的 socket，Windows 随机 named pipe；退出释放。
+- SQLite：app_data_dir()/library.sqlite3；macOS 为 ~/Library/Application Support/dev.bilidm.player/library.sqlite3。
+- 视频和字幕缓存：app_cache_dir()/torrents/<info-hash>/。
+- 元数据缓存：app_cache_dir()/torrents/metadata/<info-hash>.torrent；再次打开时可从本地恢复目录。
+- schema 2 自动从 schema 1 事务迁移，保留原有 torrent_tasks/media，增加播放进度和播放偏好。拒绝打开更新版本的 schema。
 
-迁移使用 PRAGMA user_version，当前 schema 为 1。torrent_tasks 保存 torrent_id、magnet_uri、created_at、status，以及名称、目录快照、更新时间；media 保存 id、path、filename、duration，以及可选 torrent/file 引用。时长在 mpv 读取成功后保存。解析失败的链接不保存成任务。
+任务历史、媒体缓存和续播位置保存在本机。启动不创建 rqbit 网络会话，遗留 downloading 状态恢复为 paused。缓存不会自动删除；暂未提供缓存管理页面，清理前请退出应用。调试构建可设置 BILI_DM_TEST_ROOT 将数据库和缓存隔离到测试目录；正式构建忽略此变量。
 
-视频缓存保留用于重新播放时校验复用，暂无自动清理或管理页面。**任务历史不等于离线 metadata 缓存**：重启后播放磁力仍需重新解析节点。清理缓存前退出应用；数据库和正文缓存可独立管理。
-
-## 目录与架构
-
-```text
-src/frontend/
-  components/       输入、目录、控制面板、历史等展示组件
-  pages/            页面组合
-  hooks/            异步状态、串行轮询、操作互斥
-  services/         用例与命令调用
-  types/            IPC DTO
-  lib/              IPC、错误和格式化
-  stores/           跨页面状态预留
-src-tauri/src/
-  commands/         Tauri 参数和系统对话框适配
-  core/             AppService / PlaybackService 编排
-  torrent/          TorrentEngine 接口、librqbit 适配
-  media/            文件分类、单范围 HTTP 字节流
-  player/           PlayerBackend 接口、mpv IPC 适配
-  database/         LibraryRepository、SQLite、版本化迁移
-  lib.rs            依赖装配、生命周期
-  main.rs           启动错误处理
-plugins/README.md   扩展约定，没有插件运行时
-```
-
-调用方向：**Frontend → Service → Tauri Command → Rust Core → 接口适配器**。视频字节走 librqbit seekable reader → 私有 loopback Range 流 → mpv，不经过 JSON IPC。媒体传输只监听 127.0.0.1 随机端口，随机 token 限定选中文件，不提供业务管理 API 或任意路径访问。详见 [架构说明](docs/architecture.md)。
-
-## 检查与构建
+## 检查与打包
 
 ```sh
-npm run check       # TS strict、rustfmt、Clippy -D warnings
-npm run rust:test   # 7 个单元测试、SQLite 3 个集成测试、HTTP Range 集成测试
-npm run build       # 前端生产构建
-npm run desktop:build
-# macOS 仅生成 .app（本次交付使用）
+npm run check          # TypeScript、rustfmt、Clippy -D warnings
+npm run rust:test      # 21 个单元/集成测试
 npm run desktop:build -- --bundles app
 ```
 
-产物在 src-tauri/target/release/bundle/，各平台应在目标系统构建验证。尚未配置发布签名、公证或自动更新。提交了 npm/Cargo lock；Clippy 禁止 unwrap() / expect()。
+macOS 产物：src-tauri/target/release/bundle/macos/Bili DM.app，包含播放器库和许可证。默认使用本地 ad-hoc 签名；尚未配置 Developer ID 分发签名、公证或自动更新。
 
-真实引擎与播放器验证命令（需要 mpv，网络结果取决于节点）：
+Entitlements.plist 允许本应用在 hardened runtime 下加载第三方 libmpv 动态库，避免签名后无法开始播放。不会修改系统安全设置。
+
+测试覆盖 metadata 参数、自然排序、字幕匹配、分片范围、HTTP Range/撤销阻塞读取、旧库迁移、续播、取消打开、解码错误清理、自动连播与预取边界。
+
+真实引擎 smoke：
 
 ```sh
 cargo run --manifest-path src-tauri/Cargo.toml --example inspect_magnet -- 'magnet:?...'
-cargo run --manifest-path src-tauri/Cargo.toml --example playback_smoke -- 'magnet:?...' 10
 cargo run --manifest-path src-tauri/Cargo.toml --example playback_smoke -- /absolute/path/video.mp4
+cargo run --manifest-path src-tauri/Cargo.toml --example playback_smoke -- 'magnet:?...' 0
+cargo run --manifest-path src-tauri/Cargo.toml --example streaming_smoke -- /absolute/path/fixtures
 ```
 
-inspect_magnet 只取 metadata。playback_smoke 验证播放、暂停、25% 音量、跳到中段、继续和停止；最后一个数字是可选的引擎文件 index。例子使用临时缓存，退出后停止会话并清理。本次用户提供的两个磁力都实测通过：
+streaming_smoke 的输入目录需要两个可 seek、时长大于 30 秒的视频（例如 E01.mp4、E02.mp4）及同名 E01.zh.srt。例子创建临时种子、本机 tracker 和限速 seeder，验证首帧发生在下载完成前、跳转、续播、字幕选中、当前集下载完成后预取下一集，以及 EOF 自动切集。追加 hold-seeder 参数可保留受控源进行 GUI 检查，Ctrl+C 正常释放。
 
-| Info hash 前缀 | 目录 | 流式验证 |
-| --- | --- | --- |
-| b289ee90 | 12 个 MKV；选第 1 集（index 10） | 下载约 3.9% 开始播放；中段 seek 后约 9.2% |
-| e07ed741 | 1 个 MKV | 下载约 5.4% 开始播放；中段 seek 后约 12.8% |
+本次受控样本约 16.6 MiB / 集，在约 17% 下载进度时开始播放；这是本机环回 swarm 的结果，不能代表公网磁力可用性或首帧速度。0.3.0 的原生 macOS 验证及参考范围见 [重实现记录](docs/frame-player-reimplementation.md)。
 
-GUI 验证覆盖系统文件选择、暂停、磁力目录加载、改选和真实播放。这是 macOS 本机当次结果，不保证所有磁力可用或固定首帧等待时间。
+## 架构与范围
 
-## 分阶段记录
+保持 Frontend → Service → Tauri Command → Rust Core → TorrentEngine / PlayerBackend / LibraryRepository。视频字节经 rqbit reader → 127.0.0.1 随机端口及 token → libmpv，不经过 Tauri JSON。libmpv 原生画面位于透明 WebView 下方，React 控制面板通过视口比例限定视频区域。
 
-| 阶段 | 记录 |
-| --- | --- |
-| Phase 1 | [工程初始化和 IPC](docs/phase-1.md) |
-| Phase 2 | [magnet 和 metadata](docs/phase-2.md) |
-| Phase 3 | [视频与字幕分类](docs/phase-3.md) |
-| Phase 4 | [mpv 与流式播放](docs/phase-4.md) |
-| Phase 5 | [目录选片和播放器 UI](docs/phase-5.md) |
-| Phase 6 | [SQLite 持久化](docs/phase-6.md) |
+详见 [架构说明](docs/architecture.md)。本次重做覆盖磁力和播放器主链路；Frame Player 的 TMDB/Torznab 目录、投屏、一起看、在线字幕搜索、帧预览、HDR 专项调校等未移植。弹幕、B 站匹配、AI 与插件运行时仍属于后续独立模块。
 
-每阶段独立提交，报告包括修改文件、架构、测试方法和已知问题。
+纯 BT v2 magnet 暂不支持；无节点或数据损坏时可能无法播放。硬件解码使用 mpv auto-safe，由实际编解码器和设备决定；Windows/Linux、公网 swarm、HDR 和各种字幕格式仍需目标环境验证。
 
-## 当前限制与故障处理
-
-- 支持 BT v1 / hybrid btih magnet，纯 BT v2 暂不支持。无节点时可取消或等待超时重试。
-- 独立 mpv 窗口未嵌入 Tauri，mpv 尚未随安装包分发。Windows/Linux 的窗口、named pipe、依赖和打包需要验证。
-- 缓冲慢时查看速度和连接数；可停止后重新选择。IPC 超时只结束前端等待，不取消已提交命令；metadata 另有取消入口。
-- 一次播放一个视频；本地路径需 UTF-8。没有断点续播位置、缓存清理 UI 或完整任务队列。
-- 字幕挂载、弹幕、metadata、外部 match.json 读取和插件运行时为后续工作。
+Phase 1–6 文档保留为 0.2.0 历史记录：[初始化](docs/phase-1.md)、[磁力](docs/phase-2.md)、[分类](docs/phase-3.md)、[旧播放链路](docs/phase-4.md)、[旧 UI](docs/phase-5.md)、[持久化](docs/phase-6.md)。当前行为以本文件和架构说明为准。

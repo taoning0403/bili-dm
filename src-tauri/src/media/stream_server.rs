@@ -7,6 +7,7 @@ use axum::{
     routing::get,
     Router,
 };
+use futures_util::StreamExt;
 use std::{io::SeekFrom, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
@@ -27,6 +28,7 @@ struct Source {
     token: String,
     torrent_id: String,
     file: MediaFile,
+    cancel: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -74,18 +76,22 @@ impl MediaServer {
     }
 
     pub async fn source_url(&self, torrent_id: String, file: MediaFile) -> String {
+        self.clear().await;
         let token = Uuid::new_v4().to_string();
         let url = format!("{}/stream/{token}", self.origin);
         *self.state.source.write().await = Some(Source {
             token,
             torrent_id,
             file,
+            cancel: CancellationToken::new(),
         });
         url
     }
 
     pub async fn clear(&self) {
-        *self.state.source.write().await = None;
+        if let Some(source) = self.state.source.write().await.take() {
+            source.cancel.cancel();
+        }
     }
 }
 
@@ -130,18 +136,21 @@ async fn stream_file(
     let body = if method == Method::HEAD {
         Body::empty()
     } else {
-        let mut reader = match state
-            .engine
-            .open_file(&source.torrent_id, source.file.index)
-            .await
-        {
-            Ok(reader) => reader,
-            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        let open = tokio::select! {
+            _ = source.cancel.cancelled() => return StatusCode::GONE.into_response(),
+            result = tokio::time::timeout(std::time::Duration::from_secs(15), state.engine.open_file(&source.torrent_id, source.file.index)) => result,
+        };
+        let mut reader = match open {
+            Ok(Ok(reader)) => reader,
+            _ => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
         };
         if reader.seek(SeekFrom::Start(start)).await.is_err() {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
-        Body::from_stream(ReaderStream::with_capacity(reader.take(length), 256 * 1024))
+        Body::from_stream(
+            ReaderStream::with_capacity(reader.take(length), 256 * 1024)
+                .take_until(source.cancel.cancelled_owned()),
+        )
     };
     let mut response = Response::new(body);
     *response.status_mut() = if partial {

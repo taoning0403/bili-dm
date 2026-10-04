@@ -1,5 +1,5 @@
 use super::{
-    models::{MediaRecord, TorrentRecord},
+    models::{MediaRecord, PlaybackPreferences, PlaybackProgress, TorrentRecord},
     LibraryRepository,
 };
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
     torrent::models::TorrentCatalog,
 };
 use async_trait::async_trait;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -38,7 +38,7 @@ impl SqliteLibrary {
         let version: u32 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(database_error)?;
-        if version > 1 {
+        if version > 2 {
             return Err(AppError::new(
                 "DATABASE_VERSION",
                 "数据库来自更新版本，请使用新版应用打开。",
@@ -48,6 +48,13 @@ impl SqliteLibrary {
             let transaction = connection.transaction().map_err(database_error)?;
             transaction
                 .execute_batch(include_str!("migrations/001_library.sql"))
+                .map_err(database_error)?;
+            transaction.commit().map_err(database_error)?;
+        }
+        if version < 2 {
+            let transaction = connection.transaction().map_err(database_error)?;
+            transaction
+                .execute_batch(include_str!("migrations/002_playback.sql"))
                 .map_err(database_error)?;
             transaction.commit().map_err(database_error)?;
         }
@@ -141,6 +148,54 @@ impl LibraryRepository for SqliteLibrary {
         let id = torrent_id.to_owned();
         self.run(move |connection| {
             connection.execute("UPDATE torrent_tasks SET status = 'paused', updated_at = unixepoch() WHERE torrent_id = ?1", [id]).map_err(database_error)?;
+            Ok(())
+        }).await
+    }
+
+    async fn progress(&self, path: &str) -> AppResult<Option<PlaybackProgress>> {
+        let path = path.to_owned();
+        self.run(move |connection| {
+            connection.query_row("SELECT path, position, duration, completed FROM playback_progress WHERE path=?1",[path],|row|Ok(PlaybackProgress {
+                path:row.get(0)?,position:row.get(1)?,duration:row.get(2)?,completed:row.get(3)?,
+            })).optional().map_err(database_error)
+        }).await
+    }
+    async fn save_progress(&self, progress: PlaybackProgress) -> AppResult<()> {
+        if !progress.position.is_finite()
+            || !progress.duration.is_finite()
+            || progress.duration <= 0.0
+            || progress.position < 0.0
+            || progress.position > progress.duration + 1.0
+        {
+            return Err(database_error("无效的播放进度"));
+        }
+        self.run(move |connection| {
+            connection.execute("INSERT INTO playback_progress (path,position,duration,completed) VALUES (?1,?2,?3,?4)
+                ON CONFLICT(path) DO UPDATE SET position=excluded.position,duration=excluded.duration,completed=excluded.completed,updated_at=unixepoch()",
+                params![progress.path,progress.position.min(progress.duration),progress.duration,progress.completed]).map_err(database_error)?;
+            Ok(())
+        }).await
+    }
+    async fn preferences(&self) -> AppResult<PlaybackPreferences> {
+        self.run(|connection| {
+            let json: Option<String> = connection
+                .query_row(
+                    "SELECT json FROM playback_preferences WHERE id=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            json.map(|j| serde_json::from_str(&j).map_err(database_error))
+                .transpose()
+                .map(Option::unwrap_or_default)
+        })
+        .await
+    }
+    async fn save_preferences(&self, preferences: PlaybackPreferences) -> AppResult<()> {
+        let json = serde_json::to_string(&preferences).map_err(database_error)?;
+        self.run(move |connection| {
+            connection.execute("INSERT INTO playback_preferences (id,json) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json",[json]).map_err(database_error)?;
             Ok(())
         }).await
     }

@@ -2,9 +2,9 @@ use crate::{
     core::{
         app_service::AppService,
         error::{AppError, AppResult},
-        playback_service::{ActiveMedia, PlaybackState},
+        playback_service::{ActiveMedia, PlaybackState, QueueOptions},
     },
-    player::PlayerControl,
+    player::{PlayerControl, VideoViewport},
 };
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
@@ -59,6 +59,72 @@ pub async fn control_player(
 }
 
 #[tauri::command]
-pub async fn get_playback_state(service: State<'_, AppService>) -> AppResult<PlaybackState> {
-    service.playback.snapshot().await
+pub async fn get_playback_state(
+    window: tauri::WebviewWindow,
+    service: State<'_, AppService>,
+) -> AppResult<PlayerViewState> {
+    Ok(PlayerViewState {
+        playback: service.playback.snapshot().await?,
+        fullscreen: window
+            .is_fullscreen()
+            .map_err(|e| AppError::new("WINDOW", e.to_string()))?,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct PlayerViewState {
+    #[serde(flatten)]
+    playback: PlaybackState,
+    fullscreen: bool,
+}
+
+#[tauri::command]
+pub async fn select_queue(service: State<'_, AppService>, index: usize) -> AppResult<ActiveMedia> {
+    service.playback.select_queue(index).await
+}
+#[tauri::command]
+pub async fn set_queue_options(
+    service: State<'_, AppService>,
+    options: QueueOptions,
+) -> AppResult<()> {
+    service.playback.queue_options(options).await
+}
+#[tauri::command]
+pub async fn set_video_viewport(
+    service: State<'_, AppService>,
+    viewport: VideoViewport,
+) -> AppResult<()> {
+    service.playback.viewport(viewport).await
+}
+#[tauri::command]
+pub async fn set_player_fullscreen(
+    window: tauri::WebviewWindow,
+    fullscreen: bool,
+) -> AppResult<()> {
+    window
+        .set_fullscreen(fullscreen)
+        .map_err(|e| AppError::new("WINDOW", e.to_string()))
+}
+#[tauri::command]
+pub async fn open_subtitle(app: tauri::AppHandle, service: State<'_, AppService>) -> AppResult<()> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("字幕", &["srt", "ass", "ssa", "vtt", "sub", "idx"])
+        .pick_file(move |path| {
+            let _ = sender.send(path);
+        });
+    if let Some(path) = receiver
+        .await
+        .map_err(|_| AppError::new("DIALOG", "字幕选择窗口已关闭。"))?
+    {
+        service
+            .playback
+            .add_subtitle(
+                path.into_path()
+                    .map_err(|_| AppError::new("INVALID_PATH", "请选择本地字幕。"))?,
+            )
+            .await?;
+    }
+    Ok(())
 }

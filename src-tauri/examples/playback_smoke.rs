@@ -83,6 +83,7 @@ async fn wait_for_playback(
 ) -> Result<bili_dm_lib::core::playback_service::PlaybackState, Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
+        service.tick().await?;
         let state = service.snapshot().await?;
         if let Some(error) = &state.player.error {
             return Err(error.clone().into());

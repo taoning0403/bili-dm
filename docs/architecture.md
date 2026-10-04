@@ -1,52 +1,65 @@
-# 当前架构（0.2.0）
+# 当前架构（0.3.0）
 
 ```text
 React 页面 / 展示组件
-    ↓ hooks（异步状态、轮询、交互互斥）
-frontend/services → lib/desktop.ts（IPC、错误、超时）
+    ↓ hooks（串行轮询、操作互斥、过期响应丢弃）
+frontend/services → Tauri commands（参数、系统对话框、原生窗口）
     ↓
-Tauri commands（参数 / 系统文件选择适配）
-    ↓
-AppService / PlaybackService（用例、生命周期、持久化编排）
+AppService / PlaybackService（队列、续播、生命周期）
     ├── TorrentEngine → RqbitEngine
-    ├── PlayerBackend → MpvBackend
+    ├── PlayerBackend → MpvBackend → libmpv C API
     ├── LibraryRepository → SqliteLibrary
     └── MediaServer → 单文件 HTTP Range
 
-视频字节：rqbit FileStream（AsyncRead + AsyncSeek）→ loopback → mpv
-本地播放：规范化路径 → mpv
+字节通道：rqbit FileStream → loopback HTTP → libmpv
+显示通道：libmpv 原生视图 → 透明 WebView 下方
+控制通道：React DTO → Command → Core → PlayerBackend
 ```
 
-lib.rs 是依赖装配入口，通过 Tauri 取得系统目录；Core 不引用 Tauri 类型。Command 不处理 SQL、torrent metadata 或 mpv JSON 命令。PlayerControls 只接收状态和回调，不依赖 torrent。
+lib.rs 装配依赖、获取系统目录和窗口句柄、启动后台监视器。Core 不引用 Tauri 类型，Command 不解析 torrent、不处理 SQL 和播放器协议。
 
-## 模块契约
+## TorrentEngine
 
-- TorrentEngine：解析/取消 metadata、准备选中文件、可 seek reader、下载统计、暂停/退出。librqbit 类型只在适配器内。list-only 解析不下载正文；用户选片后启动下载，seek 通过 reader 调整 piece 需求。
-- media/files：扩展名分类、最大非空视频及稳定文件 index。UI 自然排序不改变文件身份。
-- PlayerBackend：媒体源、控制和快照。mpv 用 Unix socket / Windows named pipe JSON IPC；不理解 magnet 或数据库。
-- PlaybackService：一次一个播放会话，串行处理切换、控制和快照；停止撤销媒体源、暂停下载、更新状态；退出关闭子进程与会话。时长绑定同一媒体快照，成功读取后保存一次。
-- LibraryRepository：保存目录、媒体和任务状态，读取历史。SQLite 用 spawn_blocking 执行，连接互斥、外键、WAL、参数绑定及事务。迁移由 user_version 管理，拒绝更新版本 schema。
+Session 按需创建，无启动恢复和自动联网。list_only 解析 metadata，支持取消和 120 秒超时；有效种子元数据原子写入本地缓存。新增种子以 paused + 空 only_files 注册，完成缓存校验后再选择当前视频及匹配字幕。准备失败或取消由 Core 清理。
 
-## 数据传输
+media/playlist 提供自然排序和字幕匹配，不改变 engine index。字幕使用独立 reader 请求分片，仅在校验完成后把本地路径交给 libmpv，不占用视频的 active slot。VobSub 等待 idx/sub 成对就绪。
 
-mpv 访问 http://127.0.0.1:<随机端口>/stream/<随机 token>。支持 GET/HEAD、单范围 Range、suffix ranges 与 416；seek 定位字节 reader。端点不接受任意磁盘路径；切换替换 token，停止后原 URL 返回 404。
+视频 reader 的 seek 请求交给 rqbit 的流优先级机制。统计读取真实 have bitfield，映射为文件内归一化连续区间。下一集仅在当前视频全部下载完成后加入 only_files；关闭预取移除下一集，暂停/停止取消字幕读取和下载。一次只有一个活动视频。
 
-该端点只是进程内部的媒体传输，不提供业务后端 API；前端不能用它管理任务。视频字节不经过 Tauri IPC。不存在账号、云服务或业务网络请求。
+## PlayerBackend
+
+动态加载 libmpv 稳定 C API；Library 生命周期覆盖 mpv handle。所有 handle 操作由 Mutex 串行化并在 spawn_blocking 执行，事件指针在下一次 poll 前读取、节点树读取后释放。没有外部播放器进程、socket 或 named pipe。
+
+真实 app 传入 NSView/Win32/X11 窗口句柄，使用 gpu-next；CLI smoke 使用 vo=null、ao=null 进行解码验证。native view 在 WebView 下方，通过 video-margin-ratio-* 跟随页面的 ResizeObserver。macOS 标题栏使用 Overlay，确保两个视图坐标一致；sub-use-margins=no 将字幕限制在视频范围内。
+
+macOS 应用保持 hardened runtime，并仅为本应用声明 disable-library-validation entitlement，以加载不同签名身份的 libmpv/LGPL 动态库。库路径固定在应用资源目录，开发模式回退到工作区 lib；不暴露前端任意加载库的命令。
+
+播放器禁用用户脚本和 mpv 自带的 Lua 控制台、统计面板、自动配置等脚本：这些功能已由本应用承担，也避免 LuaJIT 执行内存触发 hardened runtime 的签名终止。无需开放 unsigned-executable-memory。
+
+暴露 load、控制、外挂字幕、视口、快照和 shutdown。快照包含位置/时长、暂停/EOF、音量/倍速、音轨/字幕、章节、解码和缓冲状态。音轨偏好按语言/标题/编码匹配，避免跨文件复用不同含义的 track ID。
+
+## PlaybackService
+
+Session mutex 串行化切换和状态变更，独立 published snapshot 保证打开/缓存校验期间 UI 状态读取不被阻塞。500 ms 后台 tick 负责自动字幕、偏好恢复、进度保存、预取和 EOF；不依赖前端轮询驱动播放。
+
+打开操作有 cancellation token：停止先取消准备，再撤销 HTTP 源、停止 mpv、暂停 torrent 和保存状态。native spawn_blocking load 不通过丢弃 future 取消，必须等待返回后清理，避免停止之后又开始播放。退出保持 AppKit 事件循环运行，后台销毁播放器并关闭 BT 会话后再退出进程。
+
+EOF 支持单集/列表循环与自动下一集；无后续集时暂停下载但保留可回看的媒体。当前集完成前不预取，最多一个后续文件。失败会停止相关下载并发布可见错误。
+
+## HTTP 传输
+
+端点只监听 127.0.0.1 随机端口，路径含随机 token 并绑定当前选中的文件；没有任意磁盘路径或管理 API。支持 GET、HEAD、单范围 Range、suffix、416。打开 reader 最长等待 15 秒。
+
+切换或停止会使旧 URL 失效，并主动取消已经建立但等待缺失分片的响应体，释放 reader 和读取优先级。媒体字节不经过 JSON。缓冲条按字节比例显示，有别于实际解码时间映射。
 
 ## 持久化与身份
 
-torrent_tasks 保存磁力、目录快照、创建时间与 ready/downloading/paused 状态；media 保存路径、文件名、可空时长及 torrent/file 引用。本地媒体以规范化绝对路径构造 ID，磁力媒体以 info hash + file index 构造 ID，路径表示为 torrent://<hash>/<index>。
+schema 2 保留 torrent_tasks 和 media，增加以规范化 path 为外键的 playback_progress，以及单行 JSON playback_preferences。进度包含 position、duration、completed；本地媒体按规范化绝对路径识别，torrent 媒体按 info hash + file index 识别。
 
-重启将 downloading 恢复为 paused；读取历史不创建网络会话。内存 metadata 对象不持久化，重新播放需重新解析，正文缓存则校验复用。移动本地文件会形成新路径身份，未来内容去重应通过专门适配器实现。
+SQLite 连接使用 Mutex、spawn_blocking、WAL、外键、参数绑定及迁移事务，拒绝未知新 schema。重启将 downloading 标记为 paused；读取本地历史、进度和偏好不会创建引擎 Session。
 
-## 字幕和未来扩展
+## 验证与扩展
 
-FileKind::Subtitle 已识别外部字幕，当前 prepare_file 仍只接受 Video。后续分别提供视频源和字幕源，在 PlayerBackend 添加字幕挂载/移除操作；本地字幕用系统选择器，磁力字幕用独立下载/流源。**不能用当前唯一 active 视频槽加载字幕**，否则会中断视频。
+21 个自动化测试覆盖纯函数、真实 HTTP、SQLite 迁移和播放状态机。streaming_smoke 验证受控真实 BT + libmpv；原生 app 单独验证画面嵌入、字幕和窗口生命周期。浏览器页面、headless 解码、原生显示、公网节点和其他操作系统分别作为不同验证边界。
 
-未来以稳定媒体 ID 为输入，独立接口接入弹幕流、标题/封面/简介及外部 Agent 的 match.json。新增关联表保存 provider 与媒体关系，核心表不加入 Bilibili 或 AI 专有字段。当前没有插件扫描、安装、执行或自动匹配；约定见 plugins/README.md。
-
-## 错误和验证
-
-统一 AppError { code, message }，command 返回 Result，前端显示错误。metadata 可取消且最长 120 秒，缓存初始化、播放打开、IPC 有独立时限。前端时限不等于后台取消。
-
-测试分层：纯文件/Range/magnet 校验、真实 loopback HTTP、SQLite 持久化/迁移/事务、真实 mpv/librqbit smoke、原生 GUI。平台验证以阶段报告为准。
+后续弹幕、匹配和媒体信息模块应通过稳定媒体身份接入，不向 torrent/player/database 适配器加入 Bilibili 或 AI 业务字段。插件约定仍见 plugins/README.md。
