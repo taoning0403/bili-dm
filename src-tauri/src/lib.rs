@@ -1,3 +1,4 @@
+pub mod bilibili;
 mod commands;
 pub mod core;
 pub mod danmaku;
@@ -60,9 +61,13 @@ pub fn run() -> tauri::Result<()> {
                 Arc::new(library),
             );
             tauri::async_runtime::spawn(service.playback.clone().monitor());
+            let bilibili = Arc::new(bilibili::session::BilibiliClient::new(Some(
+                data_dir.join("account/bilibili.json"),
+            ))?);
+            app.manage(bilibili::auth::AuthService::new(bilibili.clone()));
             app.manage(danmaku::service::DanmakuService::new(
                 service.playback.clone(),
-                Arc::new(danmaku::bilibili::BilibiliProvider::new()?),
+                Arc::new(danmaku::bilibili::BilibiliProvider::with_session(bilibili)?),
                 app.path().resource_dir()?,
                 data_dir.join("danmaku"),
             ));
@@ -84,10 +89,18 @@ pub fn run() -> tauri::Result<()> {
             commands::player::set_player_fullscreen,
             commands::player::open_subtitle,
             commands::library::recent_torrents,
+            commands::bilibili::bilibili_account,
+            commands::bilibili::bilibili_login_start,
+            commands::bilibili::bilibili_login_poll,
+            commands::bilibili::bilibili_login_cancel,
+            commands::bilibili::bilibili_account_verify,
+            commands::bilibili::bilibili_logout,
+            commands::danmaku::search_danmaku,
             commands::danmaku::get_danmaku_workspace,
             commands::danmaku::resolve_danmaku,
             commands::danmaku::match_danmaku,
             commands::danmaku::apply_danmaku,
+            commands::danmaku::preview_danmaku,
             commands::danmaku::get_danmaku_job,
             commands::danmaku::cancel_danmaku,
             commands::danmaku::export_danmaku,

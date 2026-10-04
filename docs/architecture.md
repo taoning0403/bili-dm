@@ -63,3 +63,12 @@ SQLite 连接使用 Mutex、spawn_blocking、WAL、外键、参数绑定及迁�
 自动化测试覆盖纯函数、真实 HTTP、SQLite 迁移、播放状态机以及弹幕解析/匹配/混合。streaming_smoke 验证受控真实 BT + libmpv；danmaku_smoke 验证独立 libmpv 取帧和公开 B 站 provider；原生 app 单独验证画面嵌入、叠层、字幕和窗口生命周期。浏览器页面、headless 解码、原生显示、公网节点和其他操作系统分别作为不同验证边界。
 
 DanmakuService 通过稳定媒体身份及单次播放 session ID 接入，PlayerBackend 仅增加通用的快照时间戳/画面比例；独立 FrameProbe 负责解码取帧。Bilibili provider、匹配和混合均留在 danmaku 模块，不向 torrent/player/database 适配器加入 Bilibili 或 AI 业务字段。JSON 项目与 XML 保存在独立本地目录，Canvas 按播放器时钟显示，不占用字幕轨。契约见 [内置插件说明](../plugins/README.md) 和 [弹幕混合说明](danmaku-mixer.md)。
+
+
+## 本地 B 站账号、搜索与音画分析
+
+`bilibili/session` 统一管理受域限制的请求与本地会话，`auth` 封装扫码生命周期，`discovery` 负责投稿 / PGC 搜索与剧集元数据。账号凭据独立于弹幕项目存储。`DanmakuProvider` 只提供发现、元数据、音视频流和弹幕的抽象；播放器不引用 B 站账号模块。
+
+`danmaku/strategy` 定义可序列化且经校验的策略；`engine` 协调 `player/probe` 和 `player/audio_probe`，`audio` 生成本机声音指纹，`alignment` 负责有序分段与证据合并。`service` 绑定播放会话、执行预算和取消，输出可调整的 Clip；`mixer` 保持原有导出职责。前端通过 services 和 Tauri commands 调用。
+
+独立音频/画面解码器不改变主播放进度。PCM 临时文件按块分析并自动清理，客户端不需要系统 FFmpeg。搜索和账号变更由用户触发，启动不访问 B 站。

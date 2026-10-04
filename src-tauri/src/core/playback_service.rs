@@ -122,6 +122,7 @@ pub struct PlaybackService {
     lifetime: CancellationToken,
 }
 pub struct AnalysisMedia {
+    pub audio_track_id: Option<i64>,
     pub key: String,
     pub source: String,
     pub duration: f64,
@@ -484,6 +485,11 @@ impl PlaybackService {
             ));
         }
         Ok(AnalysisMedia {
+            audio_track_id: player
+                .tracks
+                .iter()
+                .find(|t| t.kind == "audio" && t.selected)
+                .map(|t| t.id),
             key: media.path(),
             duration: player.duration,
             source: state

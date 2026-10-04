@@ -26,6 +26,8 @@ pub struct SourceInfo {
     pub duration: f64,
     pub comment_count: usize,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub episode_id: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,6 +48,10 @@ pub struct Clip {
     pub enabled: bool,
     pub confidence: Option<f64>,
     pub evidence: Option<String>,
+    #[serde(default)]
+    pub review_required: bool,
+    #[serde(default)]
+    pub evidence_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

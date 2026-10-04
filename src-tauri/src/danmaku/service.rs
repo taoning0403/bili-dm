@@ -1,14 +1,16 @@
 use super::{
-    bilibili::{cancelled, DanmakuProvider, REFERER, USER_AGENT},
-    matching, mixer,
+    bilibili::{cancelled, DanmakuProvider},
+    engine::{MatchingEngine, TargetIndex},
+    mixer,
     models::*,
+    strategy::MatchOptions,
 };
 use crate::{
     core::{
         error::{AppError, AppResult},
         playback_service::{AnalysisMedia, PlaybackService},
     },
-    player::probe::{FrameProbe, ProbeInput, Progress},
+    player::probe::Progress,
 };
 use std::{
     collections::HashSet,
@@ -21,25 +23,23 @@ use tokio_util::sync::CancellationToken;
 pub struct DanmakuService {
     playback: Arc<PlaybackService>,
     provider: Arc<dyn DanmakuProvider>,
-    probe: FrameProbe,
+    engine: MatchingEngine,
     directory: PathBuf,
     serial: Arc<Semaphore>,
     status: Arc<Mutex<JobStatus>>,
     cancellation: Mutex<Option<CancellationToken>>,
 }
-struct MatchIndex {
-    input: ProbeInput,
-    duration: f64,
-    frames: Vec<crate::player::probe::Frame>,
-    step: f64,
-}
 struct Job {
     _permit: OwnedSemaphorePermit,
     status: Arc<Mutex<JobStatus>>,
     cancel: CancellationToken,
+    deadline: Option<tokio::task::JoinHandle<()>>,
 }
 impl Drop for Job {
     fn drop(&mut self) {
+        if let Some(deadline) = &self.deadline {
+            deadline.abort();
+        }
         self.cancel.cancel();
         if let Ok(mut status) = self.status.lock() {
             status.running = false;
@@ -56,7 +56,7 @@ impl DanmakuService {
         Self {
             playback,
             provider,
-            probe: FrameProbe::new(resources),
+            engine: MatchingEngine::new(resources),
             directory,
             serial: Arc::new(Semaphore::new(1)),
             status: Arc::new(Mutex::new(JobStatus::default())),
@@ -98,6 +98,7 @@ impl DanmakuService {
             _permit: permit,
             status: self.status.clone(),
             cancel: media.cancel.clone(),
+            deadline: None,
         };
         Ok((media, job))
     }
@@ -253,7 +254,18 @@ impl DanmakuService {
         session: &str,
         source_ids: Vec<String>,
     ) -> AppResult<MatchResult> {
-        let (media, _job) = self.begin(session).await?;
+        self.match_with_options(session, source_ids, MatchOptions::default())
+            .await
+    }
+    pub async fn match_with_options(
+        &self,
+        session: &str,
+        source_ids: Vec<String>,
+        options: MatchOptions,
+    ) -> AppResult<MatchResult> {
+        options.validate()?;
+        let (media, mut job) = self.begin(session).await?;
+        job.limit(options.budget_seconds);
         let project = self.read(&media).await?;
         let selected: HashSet<_> = source_ids.into_iter().collect();
         let sources: Vec<_> = project
@@ -264,44 +276,17 @@ impl DanmakuService {
         if sources.is_empty() {
             return Err(AppError::new("DANMAKU_SOURCE", "请至少选择一个弹幕源。"));
         }
-        if media.duration > 7200.0 {
-            return Err(AppError::new(
-                "MATCH_LIMIT",
-                "自动匹配支持两小时以内的视频；长视频请手动指定区间。",
-            ));
-        }
-        // Unrelated long sources must not lower the target's sampling density.
-        let step = (media.duration / 240.0).clamp(1.0, 30.0);
-        let target_input = ProbeInput {
-            source: media.source.clone(),
-            referer: None,
-            user_agent: None,
-        };
-        self.report("读取当前视频画面索引…", 0, 0);
-        let (target_duration, target_frames) = self
-            .probe
-            .sample(
-                target_input.clone(),
-                matching::sample_times(media.duration, step),
-                media.cancel.clone(),
-                self.progress("读取当前视频画面索引".into()),
+        let target = self
+            .engine
+            .prepare(
+                &media,
+                &options,
+                self.progress("建立当前视频音画索引".into()),
             )
             .await?;
-        if (target_duration - media.duration).abs() > 1.0 {
-            return Err(AppError::new(
-                "MATCH_DURATION",
-                "当前视频解码时长发生变化，请重新加载后匹配。",
-            ));
-        }
-        let target_index = MatchIndex {
-            input: target_input,
-            duration: target_duration,
-            frames: target_frames,
-            step,
-        };
         let mut result = MatchResult {
             clips: vec![],
-            errors: vec![],
+            errors: target.warnings.clone(),
         };
         for (index, source) in sources.iter().enumerate() {
             self.report(
@@ -311,117 +296,234 @@ impl DanmakuService {
                     sources.len(),
                     source.info.title
                 ),
-                0,
-                0,
+                index,
+                sources.len(),
             );
-            let matched = self.match_source(&media, &source.info, &target_index).await;
-            match matched {
-                Ok(clip) => result.clips.push(clip),
+            match self
+                .match_one(&media, &source.info, &target, &options)
+                .await
+            {
+                Ok(matched) => {
+                    if result.clips.len() + matched.clips.len() > 500 {
+                        result
+                            .errors
+                            .push("匹配区间总量达到 500 段上限，请减少所选来源。".into());
+                        break;
+                    }
+                    result.clips.extend(matched.clips);
+                    result.errors.extend(matched.warnings);
+                }
                 Err(e) if e.code == "CANCELLED" => return Err(e),
                 Err(e) => result
                     .errors
                     .push(format!("{}：{}", source.info.title, e.message)),
             }
         }
-        if media.cancel.is_cancelled() {
-            return Err(cancelled());
-        }
         Ok(result)
     }
-    async fn match_source(
+    async fn match_one(
         &self,
         media: &AnalysisMedia,
         source: &SourceInfo,
-        index: &MatchIndex,
-    ) -> AppResult<Clip> {
-        if source.duration > 7200.0 {
-            return Err(AppError::new(
-                "MATCH_LIMIT",
-                "源视频超过两小时，请手动指定区间。",
-            ));
-        }
+        target: &TargetIndex,
+        options: &MatchOptions,
+    ) -> AppResult<super::engine::AlignedSource> {
         let stream = self.provider.stream(source, &media.cancel).await?;
-        let source_step = index.step.max(stream.duration / 600.0);
-        let input = ProbeInput {
-            source: stream.url,
-            referer: Some(REFERER.into()),
-            user_agent: Some(USER_AGENT.into()),
-        };
-        let (duration, frames) = self
-            .probe
-            .sample(
-                input.clone(),
-                matching::sample_times(stream.duration, source_step),
-                media.cancel.clone(),
-                self.progress(format!("读取源画面：{}", source.title)),
+        self.engine
+            .match_source(
+                media,
+                source,
+                stream,
+                target,
+                options,
+                self.progress(format!("分析：{}", source.title)),
             )
-            .await?;
-        if (duration - stream.duration).abs() > 1.0 {
-            return Err(AppError::new(
-                "MATCH_DURATION",
-                "源视频实际时长与接口不符，不能自动匹配。",
-            ));
-        }
-        let offsets =
-            matching::candidates(&frames, &index.frames, duration, index.duration, index.step);
-        let mut accepted = Vec::new();
-        for offset in offsets {
-            let times = matching::anchor_times(offset, duration, index.duration);
-            let (_, anchors) = self
-                .probe
-                .sample(
-                    input.clone(),
-                    times,
-                    media.cancel.clone(),
-                    self.progress("精确校验源首尾与中段画面".into()),
-                )
-                .await?;
-            let span = source_step + 0.5;
-            let mut times = Vec::new();
-            for anchor in &anchors {
-                let center = anchor.time + offset;
-                let mut t = (center - span).max(0.1);
-                while t <= (center + span).min(index.duration - 0.1) {
-                    times.push(t);
-                    t += 0.25;
+            .await
+    }
+    pub async fn search_and_match(
+        &self,
+        session: &str,
+        query: String,
+        page: u32,
+        options: MatchOptions,
+    ) -> AppResult<SearchResult> {
+        options.validate()?;
+        let (media, mut job) = self.begin(session).await?;
+        job.limit(options.budget_seconds);
+        let mut project = self.read(&media).await?;
+        self.report("搜索 B 站视频、番剧与影视…", 0, 0);
+        let discovery = self.provider.search(&query, page, &media.cancel).await?;
+        let mut errors = discovery.warnings;
+        let mut candidates = vec![];
+        let mut clips = vec![];
+        let mut seen = HashSet::new();
+        let mut target = None;
+        let episode = requested_episode(&query);
+        let mut truncated = false;
+        'hits: for hit in discovery.hits {
+            if candidates.len() >= options.max_candidates {
+                truncated = true;
+                break;
+            }
+            let mut sources = match self.provider.videos(&hit.input, &media.cancel).await {
+                Ok(s) => s,
+                Err(e) if e.code == "CANCELLED" => return Err(e),
+                Err(e) => {
+                    candidates.push(SearchCandidate {
+                        title: hit.title,
+                        input: hit.input,
+                        duration: None,
+                        state: "unavailable".into(),
+                        reason: e.message,
+                        coverage: 0.0,
+                        clip_count: 0,
+                    });
+                    continue;
+                }
+            };
+            if let Some(episode) = episode {
+                sources.sort_by_key(|s| s.page != episode);
+                if sources
+                    .iter()
+                    .any(|s| s.episode_id.is_some() && s.page == episode)
+                {
+                    sources.retain(|s| s.episode_id.is_none() || s.page == episode);
                 }
             }
-            times.sort_by(f64::total_cmp);
-            times.dedup_by(|a, b| (*a - *b).abs() < 0.05);
-            let (_, fine) = self
-                .probe
-                .sample(
-                    index.input.clone(),
-                    times,
-                    media.cancel.clone(),
-                    self.progress("精确校验当前视频首尾与中段".into()),
-                )
-                .await?;
-            if let Some(alignment) =
-                matching::refine(&anchors, &fine, offset, span, duration, index.duration)
-            {
-                accepted.push(alignment);
+            for source in sources {
+                if candidates.len() >= options.max_candidates {
+                    truncated = true;
+                    break 'hits;
+                }
+                if !seen.insert(source.id.clone()) {
+                    continue;
+                }
+                let input = source
+                    .episode_id
+                    .map(|id| format!("ep{id}"))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "https://www.bilibili.com/video/{}?p={}",
+                            source.bvid, source.page
+                        )
+                    });
+                let mut candidate = SearchCandidate {
+                    title: source.title.clone(),
+                    input,
+                    duration: Some(source.duration),
+                    state: "filtered".into(),
+                    reason: String::new(),
+                    coverage: 0.0,
+                    clip_count: 0,
+                };
+                if !options.duration_allowed(source.duration, media.duration) {
+                    candidate.reason = format!(
+                        "时长 {:.1}s，低于当前视频的 {:.0}%",
+                        source.duration,
+                        options.min_duration_ratio * 100.0
+                    );
+                    candidates.push(candidate);
+                    continue;
+                }
+                if target.is_none() {
+                    target = Some(
+                        self.engine
+                            .prepare(
+                                &media,
+                                &options,
+                                self.progress("建立当前视频音画索引".into()),
+                            )
+                            .await?,
+                    );
+                    if let Some(t) = &target {
+                        errors.extend(t.warnings.clone());
+                    }
+                }
+                let Some(index) = &target else {
+                    continue;
+                };
+                match self.match_one(&media, &source, index, &options).await {
+                    Ok(matched) => {
+                        candidate.coverage = matched.coverage;
+                        candidate.clip_count = matched.clips.len();
+                        candidate.state = if matched.clips.iter().all(|c| !c.enabled) {
+                            "review"
+                        } else {
+                            "matched"
+                        }
+                        .into();
+                        candidate.reason = matched.warnings.join("；");
+                        if project.clips.len() + clips.len() + matched.clips.len() > 500 {
+                            candidate.state = "limit".into();
+                            candidate.reason =
+                                "区间总量将超过 500 段，请先减少现有区间或匹配来源。".into();
+                            candidates.push(candidate);
+                            continue;
+                        }
+                        // Only fetch comments for candidates which have alignment evidence.
+                        let parsed =
+                            match self.provider.comments(source.clone(), &media.cancel).await {
+                                Ok(p) => p,
+                                Err(e) if e.code == "CANCELLED" => return Err(e),
+                                Err(e) => {
+                                    candidate.state = "unavailable".into();
+                                    candidate.reason = e.message;
+                                    candidates.push(candidate);
+                                    continue;
+                                }
+                            };
+                        let count: usize = project
+                            .sources
+                            .iter()
+                            .filter(|s| s.info.id != source.id)
+                            .map(|s| s.comments.len())
+                            .sum();
+                        let old = project.sources.iter_mut().find(|s| s.info.id == source.id);
+                        if count + parsed.comments.len() > MAX_COMMENTS
+                            || (old.is_none() && project.sources.len() >= MAX_SOURCES)
+                        {
+                            candidate.state = "limit".into();
+                            candidate.reason = "项目来源或弹幕数量达到上限。".into();
+                        } else {
+                            if let Some(old) =
+                                project.sources.iter_mut().find(|s| s.info.id == source.id)
+                            {
+                                *old = parsed;
+                            } else {
+                                project.sources.push(parsed);
+                            }
+                            clips.extend(matched.clips);
+                        }
+                    }
+                    Err(e) if e.code == "CANCELLED" => return Err(e),
+                    Err(e) => {
+                        candidate.state = if e.code == "MATCH_NOT_FOUND" {
+                            "unmatched"
+                        } else {
+                            "unavailable"
+                        }
+                        .into();
+                        candidate.reason = e.message;
+                    }
+                }
+                candidates.push(candidate);
             }
         }
-        accepted.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
-        let best = accepted.first().ok_or_else(|| {
-            AppError::new(
-                "MATCH_NOT_FOUND",
-                "没有找到首尾、中段画面及区间时长均一致的匹配，请手动添加区间。",
-            )
-        })?;
-        if accepted.get(1).is_some_and(|other| {
-            (other.confidence - best.confidence).abs() < 0.05
-                && (other.target_start - other.source_start - best.target_start + best.source_start)
-                    .abs()
-                    > 1.0
-        }) {
-            return Err(AppError::new(
-                "MATCH_AMBIGUOUS",
-                "发现重复画面或多个相近候选，请手动指定区间。",
+        if truncated {
+            errors.push(format!(
+                "本页已检查 {} 个候选；可增大候选上限重搜本页。",
+                options.max_candidates
             ));
         }
-        Ok(Clip { id:uuid::Uuid::new_v4().to_string(),source_id:source.id.clone(),source_start:best.source_start,source_end:best.source_end.min(source.duration),target_start:best.target_start,target_end:best.target_end.min(media.duration),enabled:true,confidence:Some(best.confidence),evidence:Some(format!("首帧 {:.0}% · 尾帧 {:.0}% · 中段通过 · 首尾时差 {:.2}s；采样精度约 0.25s，请预览复核。",best.head_score*100.0,best.tail_score*100.0,best.duration_error)) })
+        self.save(&project, &media.cancel).await?;
+        Ok(SearchResult {
+            workspace: project.view(vec![]),
+            clips,
+            candidates,
+            errors,
+            page,
+            has_more: discovery.has_more,
+        })
     }
     pub async fn apply(&self, session: &str, clips: Vec<Clip>) -> AppResult<Workspace> {
         let (media, _job) = self.begin(session).await?;
@@ -440,6 +542,36 @@ impl DanmakuService {
         project.mixed = Some(track);
         self.save(&project, &media.cancel).await?;
         Ok(project.view(vec![]))
+    }
+    pub async fn preview(
+        &self,
+        session: &str,
+        source_id: &str,
+        source_time: f64,
+        target_time: f64,
+    ) -> AppResult<super::engine::AlignmentPreview> {
+        let (media, mut job) = self.begin(session).await?;
+        job.limit(90);
+        let project = self.read(&media).await?;
+        let source = project
+            .sources
+            .iter()
+            .find(|s| s.info.id == source_id)
+            .ok_or_else(|| AppError::new("DANMAKU_SOURCE", "弹幕源不存在。"))?;
+        if !source_time.is_finite()
+            || !target_time.is_finite()
+            || source_time < 0.0
+            || source_time >= source.info.duration
+            || target_time < 0.0
+            || target_time >= media.duration
+        {
+            return Err(AppError::new("DANMAKU_RANGE", "预览位置不在视频范围内。"));
+        }
+        self.report("读取来源与当前视频的对应画面…", 0, 2);
+        let stream = self.provider.stream(&source.info, &media.cancel).await?;
+        self.engine
+            .preview(&media, stream, source_time, target_time)
+            .await
     }
     pub async fn export(&self, session: &str, path: PathBuf) -> AppResult<String> {
         let (media, _job) = self.begin(session).await?;
@@ -473,4 +605,46 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> AppResult<()> {
     })
     .await
     .map_err(AppError::io)?
+}
+
+impl Job {
+    fn limit(&mut self, seconds: u64) {
+        let token = self.cancel.clone();
+        self.deadline = Some(tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+            token.cancel();
+        }));
+    }
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCandidate {
+    pub title: String,
+    pub input: String,
+    pub duration: Option<f64>,
+    pub state: String,
+    pub reason: String,
+    pub coverage: f64,
+    pub clip_count: usize,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub workspace: Workspace,
+    pub clips: Vec<Clip>,
+    pub candidates: Vec<SearchCandidate>,
+    pub errors: Vec<String>,
+    pub page: u32,
+    pub has_more: bool,
+}
+pub fn requested_episode(query: &str) -> Option<u32> {
+    regex::Regex::new(
+        r"(?i)(?:第\s*|(?:^|[^a-z])(?:s\d{1,2})?e(?:p)?\s*)(\d{1,3})(?:\s*[集话話]|\b)",
+    )
+    .ok()?
+    .captures(query)?
+    .get(1)?
+    .as_str()
+    .parse()
+    .ok()
 }

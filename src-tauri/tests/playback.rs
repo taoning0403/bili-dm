@@ -31,6 +31,34 @@ struct DanmakuProviderFixture {
 }
 #[async_trait]
 impl bili_dm_lib::danmaku::bilibili::DanmakuProvider for DanmakuProviderFixture {
+    async fn search(
+        &self,
+        query: &str,
+        _: u32,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> AppResult<bili_dm_lib::bilibili::discovery::SearchPage> {
+        if query == "wait" {
+            self.entered.notify_one();
+            cancel.cancelled().await;
+            return Err(bili_dm_lib::danmaku::bilibili::cancelled());
+        }
+        Ok(bili_dm_lib::bilibili::discovery::SearchPage {
+            hits: if query == "limited" {
+                vec!["bad", "bad", "short"]
+            } else {
+                vec!["short"]
+            }
+            .into_iter()
+            .map(|input| bili_dm_lib::bilibili::discovery::SearchHit {
+                input: input.into(),
+                title: input.into(),
+                kind: "video".into(),
+            })
+            .collect(),
+            has_more: false,
+            warnings: vec![],
+        })
+    }
     async fn videos(
         &self,
         input: &str,
@@ -53,6 +81,7 @@ impl bili_dm_lib::danmaku::bilibili::DanmakuProvider for DanmakuProviderFixture 
             duration: 10.0,
             comment_count: 0,
             warnings: vec![],
+            episode_id: None,
         }])
     }
     async fn comments(
@@ -80,6 +109,66 @@ impl bili_dm_lib::danmaku::bilibili::DanmakuProvider for DanmakuProviderFixture 
     ) -> AppResult<bili_dm_lib::danmaku::bilibili::VideoStream> {
         Err(AppError::new("FIXTURE", "not used"))
     }
+}
+
+#[tokio::test]
+async fn smart_search_filters_short_candidates_before_decoding_and_cancels_on_stop(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bili_dm_lib::danmaku::{service::DanmakuService, strategy::MatchOptions};
+    let (dir, _engine, _player, _library, playback) = setup().await?;
+    let media = playback.play_torrent("fixture", 7).await?;
+    playback.tick().await?;
+    let provider = Arc::new(DanmakuProviderFixture {
+        entered: Notify::new(),
+    });
+    // This directory deliberately has no decoder runtime: filtered candidates
+    // must never reach expensive decoding or comment fetching.
+    let service = Arc::new(DanmakuService::new(
+        playback.clone(),
+        provider.clone(),
+        dir.path().into(),
+        dir.path().join("dm"),
+    ));
+    let result = service
+        .search_and_match(
+            &media.session_id,
+            "short".into(),
+            1,
+            MatchOptions::default(),
+        )
+        .await?;
+    assert_eq!(result.candidates.len(), 1);
+    assert_eq!(result.candidates[0].state, "filtered");
+    assert!(result.workspace.sources.is_empty());
+    assert!(result.clips.is_empty());
+    let limited = service
+        .search_and_match(
+            &media.session_id,
+            "limited".into(),
+            1,
+            MatchOptions {
+                max_candidates: 1,
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(limited.candidates.len(), 1);
+    assert_eq!(limited.candidates[0].state, "unavailable");
+    assert!(limited.errors.iter().any(|e| e.contains("1 个候选")));
+    let task = {
+        let service = service.clone();
+        let session = media.session_id;
+        tokio::spawn(async move {
+            service
+                .search_and_match(&session, "wait".into(), 1, MatchOptions::default())
+                .await
+        })
+    };
+    provider.entered.notified().await;
+    playback.control(PlayerControl::Stop).await?;
+    assert_eq!(task.await?.err().map(|e| e.code), Some("CANCELLED"));
+    assert!(!service.status().running);
+    Ok(())
 }
 
 #[tokio::test]
@@ -119,6 +208,8 @@ async fn danmaku_projects_persist_mixes_handle_partial_failures_and_reject_stale
             enabled: true,
             confidence: None,
             evidence: None,
+            review_required: false,
+            evidence_kind: None,
         })
         .collect();
     let applied = service.apply(&media.session_id, clips).await?;

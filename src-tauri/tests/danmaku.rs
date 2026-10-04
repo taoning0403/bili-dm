@@ -35,6 +35,7 @@ fn source(id: &str) -> ParsedSource {
             duration: 100.0,
             comment_count: 4,
             warnings: vec![],
+            episode_id: None,
         },
         comments: [0.0, 10.0, 20.0, 30.0]
             .iter()
@@ -61,6 +62,8 @@ fn clip(id: &str, ss: f64, se: f64, ts: f64, te: f64) -> Clip {
         enabled: true,
         confidence: None,
         evidence: None,
+        review_required: false,
+        evidence_kind: None,
     }
 }
 

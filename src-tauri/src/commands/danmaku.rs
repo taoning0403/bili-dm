@@ -2,7 +2,8 @@ use crate::{
     core::error::{AppError, AppResult},
     danmaku::{
         models::{Clip, JobStatus, Workspace},
-        service::{DanmakuService, MatchResult},
+        service::{DanmakuService, MatchResult, SearchResult},
+        strategy::MatchOptions,
     },
 };
 use tauri::State;
@@ -28,8 +29,23 @@ pub async fn match_danmaku(
     service: State<'_, DanmakuService>,
     session_id: String,
     source_ids: Vec<String>,
+    options: Option<MatchOptions>,
 ) -> AppResult<MatchResult> {
-    service.auto_match(&session_id, source_ids).await
+    service
+        .match_with_options(&session_id, source_ids, options.unwrap_or_default())
+        .await
+}
+#[tauri::command]
+pub async fn search_danmaku(
+    service: State<'_, DanmakuService>,
+    session_id: String,
+    query: String,
+    page: u32,
+    options: MatchOptions,
+) -> AppResult<SearchResult> {
+    service
+        .search_and_match(&session_id, query, page, options)
+        .await
 }
 #[tauri::command]
 pub async fn apply_danmaku(
@@ -38,6 +54,18 @@ pub async fn apply_danmaku(
     clips: Vec<Clip>,
 ) -> AppResult<Workspace> {
     service.apply(&session_id, clips).await
+}
+#[tauri::command]
+pub async fn preview_danmaku(
+    service: State<'_, DanmakuService>,
+    session_id: String,
+    source_id: String,
+    source_time: f64,
+    target_time: f64,
+) -> AppResult<crate::danmaku::engine::AlignmentPreview> {
+    service
+        .preview(&session_id, &source_id, source_time, target_time)
+        .await
 }
 #[tauri::command]
 pub fn get_danmaku_job(service: State<'_, DanmakuService>) -> JobStatus {

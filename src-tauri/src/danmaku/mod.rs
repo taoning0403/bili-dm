@@ -4,3 +4,8 @@ pub mod matching;
 pub mod mixer;
 pub mod models;
 pub mod service;
+
+pub mod alignment;
+pub mod audio;
+pub mod engine;
+pub mod strategy;

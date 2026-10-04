@@ -65,6 +65,7 @@ pub struct Client {
     pub loaded: bool,
     pub last_error: Option<String>,
     pub frame_revision: u64,
+    pub finished: bool,
 }
 // mpv permits calls from any thread. The owning Mutex ensures a single caller
 // and prevents destruction while a property or event pointer is being read.
@@ -76,6 +77,13 @@ fn cstring(value: &str) -> AppResult<CString> {
 
 impl Client {
     pub fn open(path: &Path, wid: Option<i64>) -> AppResult<Self> {
+        Self::open_with_options(path, wid, &[])
+    }
+    pub fn open_with_options(
+        path: &Path,
+        wid: Option<i64>,
+        options: &[(&str, String)],
+    ) -> AppResult<Self> {
         // SAFETY: all symbols and repr(C) layouts follow libmpv client API 2.
         // Api retains the Library until after terminate_destroy.
         let api = unsafe {
@@ -115,6 +123,7 @@ impl Client {
             loaded: false,
             last_error: None,
             frame_revision: 0,
+            finished: false,
         };
         for (key, value) in [
             ("config", "no"),
@@ -157,6 +166,9 @@ impl Client {
             // CLI smoke tests exercise demux/decode without an AppKit event loop.
             client.option("vo", "null")?;
             client.option("ao", "null")?;
+        }
+        for (key, value) in options {
+            client.option(key, value)?;
         }
         client.check(unsafe { (client.api.initialize)(handle) })?;
         Ok(client)
@@ -238,12 +250,14 @@ impl Client {
                 0 => break,
                 6 => {
                     self.loaded = false;
+                    self.finished = false;
                     self.last_error = None;
                 }
                 8 => self.loaded = true,
                 21 => self.frame_revision = self.frame_revision.wrapping_add(1),
                 7 if !event.data.is_null() => {
                     let end = unsafe { &*event.data.cast::<EndFile>() };
+                    self.finished = true;
                     if end.reason == 4 {
                         self.last_error = Some(
                             unsafe { CStr::from_ptr((self.api.error)(end.error)) }

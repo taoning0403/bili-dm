@@ -164,3 +164,30 @@ h1, h2, p { margin: 0; } h2 { font-size: 14px; font-weight: 550; }
 .dm-display-settings > button { margin-top: 10px; }
 .dm-notice { padding: 12px; margin-top: 14px; color: #c7dfbd; background: #263729; border-radius: 6px; overflow-wrap: anywhere; }
 .danmaku-panel .error-message p + p { margin-top: 8px; }
+
+.dm-account { border: 1px solid #2b3547; border-radius: 12px; padding: 12px; }
+.dm-login-qr { display: grid; justify-items: center; gap: 10px; margin: 12px 0; }
+.dm-login-qr svg { display: block; width: 190px; height: 190px; border-radius: 6px; }
+.dm-search > input { width: 100%; box-sizing: border-box; margin: 6px 0 12px; }
+.dm-strategy { padding: 12px; border: 1px solid #2b3547; border-radius: 10px; }
+.dm-strategy > label, .dm-strategy details > label { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.dm-strategy select { min-width: 0; max-width: 220px; flex: 1; }
+.dm-strategy summary, .dm-candidates summary { cursor: pointer; padding: 10px 0; }
+.dm-candidate { padding: 10px 0; border-bottom: 1px solid #2b3547; }
+.dm-candidate > div { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.dm-candidate strong { font-size: 12px; line-height: 1.5; }
+.dm-status { font-size: 11px; white-space: nowrap; border-radius: 4px; padding: 3px 5px; background: #31394b; }
+.dm-status.matched { color: #82e1c0; background: #164539; }
+.dm-status.review { color: #f1c77b; background: #4c391e; }
+.dm-timelines { display: grid; gap: 8px; margin: 12px 0; }
+.dm-timeline-label { display: flex; justify-content: space-between; font-size: 11px; color: #abb9cc; }
+.dm-timeline { height: 12px; margin-top: 6px; background: #252f40; position: relative; border-radius: 4px; overflow: hidden; }
+.dm-timeline button { position: absolute; top: 0; height: 100%; border: 0; min-width: 2px; padding: 0; background: #5abf9b; border-radius: 2px; }
+.dm-timeline.review button { background: #dcad5e; }
+.dm-timeline-handles { display: flex; gap: 8px; }
+.dm-timeline-handles input { min-width: 0; width: 50%; height: 16px; }
+
+.dm-preview-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+.dm-preview-pair figure { margin: 0; }
+.dm-preview-pair img { display: block; width: 100%; border-radius: 6px; }
+.dm-preview-pair figcaption { font-size: 11px; margin-top: 4px; color: #abb9cc; }

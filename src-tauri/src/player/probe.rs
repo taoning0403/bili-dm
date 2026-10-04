@@ -28,6 +28,12 @@ pub type Progress = Arc<dyn Fn(usize, usize) + Send + Sync>;
 pub struct FrameProbe {
     library: PathBuf,
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameImage {
+    pub data_url: String,
+    pub time: f64,
+}
 impl FrameProbe {
     pub fn new(resources: PathBuf) -> Self {
         Self {
@@ -46,7 +52,7 @@ impl FrameProbe {
         // are destroyed before another job can begin.
         tokio::task::spawn_blocking(move || {
             if times.is_empty()
-                || times.len() > 2000
+                || times.len() > 25000
                 || times.iter().any(|t| !t.is_finite() || *t < 0.0)
             {
                 return Err(AppError::new("FRAME_INPUT", "取帧时间无效。"));
@@ -109,6 +115,72 @@ impl FrameProbe {
         })
         .await
         .map_err(|e| AppError::new("FRAME_WORKER", e.to_string()))?
+    }
+    pub async fn image(
+        &self,
+        input: ProbeInput,
+        time: f64,
+        cancel: CancellationToken,
+    ) -> AppResult<FrameImage> {
+        let library = self.library.clone();
+        tokio::task::spawn_blocking(move || {
+            use base64::Engine;
+            if !time.is_finite() || time < 0.0 || cancel.is_cancelled() {
+                return Err(AppError::new("FRAME_INPUT", "预览时间无效或已取消。"));
+            }
+            let mut client = Client::open(&library, None)?;
+            for (key, value) in [
+                ("pause", "yes"),
+                ("aid", "no"),
+                ("sid", "no"),
+                ("sub-auto", "no"),
+                ("hwdec", "no"),
+                ("vf", "scale=480:-2"),
+                ("network-timeout", "10"),
+                ("demuxer-max-bytes", "8MiB"),
+            ] {
+                client.set(key, value)?;
+            }
+            if let Some(referer) = input.referer {
+                client.set("referrer", referer)?;
+            }
+            if let Some(agent) = input.user_agent {
+                client.set("user-agent", agent)?;
+            }
+            client.command(&[
+                "loadfile",
+                &input.source,
+                "replace",
+                "-1",
+                &format!("start={time}"),
+            ])?;
+            wait_frame(&mut client, 0, &cancel)?;
+            let actual = client.property("time-pos")?.as_f64().unwrap_or(time);
+            if (actual - time).abs() > 1.0 {
+                return Err(AppError::new(
+                    "FRAME_SEEK",
+                    "预览未能准确定位，请等待分片后重试。",
+                ));
+            }
+            let (w, h, rgb) = client.screenshot_rgb()?;
+            let mut bytes = vec![];
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, w as u32, h as u32);
+                encoder.set_color(png::ColorType::Rgb);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut writer = encoder.write_header().map_err(AppError::io)?;
+                writer.write_image_data(&rgb).map_err(AppError::io)?;
+            }
+            Ok(FrameImage {
+                data_url: format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                ),
+                time: actual,
+            })
+        })
+        .await
+        .map_err(AppError::io)?
     }
 }
 fn wait_frame(client: &mut Client, previous: u64, cancel: &CancellationToken) -> AppResult<()> {

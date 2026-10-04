@@ -1,10 +1,15 @@
-//! Public Bilibili video and segmented danmaku provider. No account/cookie storage.
+//! Bilibili UGC/PGC provider backed by the application-local authenticated session.
 use super::models::{Comment, ParsedSource, SourceInfo, MAX_COMMENTS, MAX_DURATION};
+use crate::bilibili::{
+    discovery::{self, SearchPage},
+    session::{api_data, BilibiliClient},
+};
 use crate::core::error::{AppError, AppResult};
 use async_trait::async_trait;
 use prost::Message;
 use reqwest::{header, Client};
 use serde_json::Value;
+use std::sync::Arc;
 use std::{
     collections::{BTreeMap, HashSet},
     time::Duration,
@@ -77,11 +82,20 @@ pub fn parse_input(input: &str) -> AppResult<VideoId> {
 #[derive(Clone)]
 pub struct VideoStream {
     pub url: String,
+    pub audio_url: Option<String>,
     pub duration: f64,
 }
 
 #[async_trait]
 pub trait DanmakuProvider: Send + Sync {
+    async fn search(
+        &self,
+        _query: &str,
+        _page: u32,
+        _cancel: &CancellationToken,
+    ) -> AppResult<SearchPage> {
+        Err(AppError::new("SEARCH_UNAVAILABLE", "该来源暂不支持搜索。"))
+    }
     async fn videos(&self, input: &str, cancel: &CancellationToken) -> AppResult<Vec<SourceInfo>>;
     async fn comments(
         &self,
@@ -97,9 +111,13 @@ pub trait DanmakuProvider: Send + Sync {
 
 pub struct BilibiliProvider {
     client: Client,
+    session: Arc<BilibiliClient>,
 }
 impl BilibiliProvider {
     pub fn new() -> AppResult<Self> {
+        Self::with_session(Arc::new(BilibiliClient::new(None)?))
+    }
+    pub fn with_session(session: Arc<BilibiliClient>) -> AppResult<Self> {
         let client = Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(25))
@@ -107,33 +125,12 @@ impl BilibiliProvider {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| AppError::new("BILIBILI_HTTP", e.without_url().to_string()))?;
-        Ok(Self { client })
+        Ok(Self { client, session })
     }
     async fn bytes(&self, url: &str, cancel: &CancellationToken) -> AppResult<Vec<u8>> {
-        let work = async {
-            let mut response = self
-                .client
-                .get(url)
-                .header(header::REFERER, REFERER)
-                .send()
-                .await
-                .map_err(network_error)?
-                .error_for_status()
-                .map_err(network_error)?;
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(network_error)? {
-                if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
-                    return Err(AppError::new(
-                        "BILIBILI_LIMIT",
-                        "B 站响应超过 16 MiB，已停止读取。",
-                    ));
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            Ok(bytes)
-        };
-        tokio::select! { _ = cancel.cancelled() => Err(cancelled()), result = work => result }
+        self.session.bytes(url, cancel).await
     }
+
     async fn json(&self, path: &str, cancel: &CancellationToken) -> AppResult<Value> {
         serde_json::from_slice(&self.bytes(&format!("{API}{path}"), cancel).await?).map_err(|_| {
             AppError::new(
@@ -142,7 +139,7 @@ impl BilibiliProvider {
             )
         })
     }
-    async fn identify(&self, input: &str, cancel: &CancellationToken) -> AppResult<VideoId> {
+    async fn identify(&self, input: &str, cancel: &CancellationToken) -> AppResult<String> {
         let input = input.trim();
         let expanded = if input.starts_with("b23.tv/") {
             format!("https://{input}")
@@ -177,7 +174,7 @@ impl BilibiliProvider {
                         .join(location)
                         .map_err(|_| AppError::new("BILIBILI_INPUT", "短链接跳转无效。"))?;
                     if current.host_str() != Some("b23.tv") {
-                        return parse_input(current.as_str());
+                        return Ok(current.into());
                     }
                     if current.scheme() != "https"
                         || current.port().is_some()
@@ -193,7 +190,7 @@ impl BilibiliProvider {
                 ));
             }
         }
-        parse_input(&expanded)
+        Ok(expanded)
     }
     async fn signed_playurl(
         &self,
@@ -264,28 +261,25 @@ pub fn cancelled() -> AppError {
     AppError::new("CANCELLED", "已取消弹幕任务。")
 }
 fn data(value: Value) -> AppResult<Value> {
-    if value["code"].as_i64() != Some(0) {
-        return Err(AppError::new(
-            "BILIBILI_API",
-            format!(
-                "B 站接口返回 {}：{}",
-                value["code"],
-                value["message"]
-                    .as_str()
-                    .unwrap_or("视频不可用或需要登录权限")
-            ),
-        ));
-    }
-    if !value["data"].is_object() {
-        return Err(AppError::new("BILIBILI_RESPONSE", "B 站视频数据缺失。"));
-    }
-    Ok(value["data"].clone())
+    api_data(value)
 }
 
 #[async_trait]
 impl DanmakuProvider for BilibiliProvider {
+    async fn search(
+        &self,
+        query: &str,
+        page: u32,
+        cancel: &CancellationToken,
+    ) -> AppResult<SearchPage> {
+        discovery::search(&self.session, query, page, cancel).await
+    }
     async fn videos(&self, input: &str, cancel: &CancellationToken) -> AppResult<Vec<SourceInfo>> {
-        let video = self.identify(input, cancel).await?;
+        let input = self.identify(input, cancel).await?;
+        if let Some((episode, id)) = discovery::pgc_id(&input) {
+            return discovery::episodes(&self.session, episode, id, cancel).await;
+        }
+        let video = parse_input(&input)?;
         let view = data(
             self.json(
                 &format!("/x/web-interface/view?bvid={}", video.bvid),
@@ -325,6 +319,7 @@ impl DanmakuProvider for BilibiliProvider {
                 duration,
                 comment_count: 0,
                 warnings: vec![],
+                episode_id: None,
             });
         }
         if result.is_empty() {
@@ -383,19 +378,44 @@ impl DanmakuProvider for BilibiliProvider {
         source: &SourceInfo,
         cancel: &CancellationToken,
     ) -> AppResult<VideoStream> {
-        let response = self
-            .json(
-                &format!(
-                    "/x/player/playurl?bvid={}&cid={}&qn=16&fnval=16&fourk=0",
-                    source.bvid, source.cid
-                ),
-                cancel,
-            )
-            .await;
-        let play = match response.and_then(data) {
-            Ok(play) => play,
-            Err(e) if e.code == "CANCELLED" => return Err(e),
-            Err(_) => data(self.signed_playurl(source, cancel).await?)?,
+        let play = if let Some(episode) = source.episode_id {
+            let value = data(
+                self.json(
+                    &format!(
+                        "/pgc/player/web/v2/playurl?ep_id={episode}&cid={}&qn=16&fnval=16&fourk=0",
+                        source.cid
+                    ),
+                    cancel,
+                )
+                .await?,
+            )?;
+            let video = value.get("video_info").unwrap_or(&value);
+            if value["is_preview"].as_bool() == Some(true)
+                || video["is_preview"].as_bool() == Some(true)
+                || value["play_check"]["play_detail"].as_str() == Some("PLAY_PREVIEW")
+                || value["play_video_type"].as_str() == Some("preview")
+            {
+                return Err(AppError::new(
+                    "BILIBILI_PREVIEW",
+                    "当前账号仅能观看预览，请登录有观看权益的账号。",
+                ));
+            }
+            video.clone()
+        } else {
+            let response = self
+                .json(
+                    &format!(
+                        "/x/player/playurl?bvid={}&cid={}&qn=16&fnval=16&fourk=0",
+                        source.bvid, source.cid
+                    ),
+                    cancel,
+                )
+                .await;
+            match response.and_then(data) {
+                Ok(play) => play,
+                Err(e) if e.code == "CANCELLED" => return Err(e),
+                Err(_) => data(self.signed_playurl(source, cancel).await?)?,
+            }
         };
         let duration = play["timelength"].as_f64().unwrap_or_default() / 1000.0;
         if duration <= 0.0 || (duration - source.duration).abs() > 2.0 {
@@ -431,6 +451,18 @@ impl DanmakuProvider for BilibiliProvider {
             &parts[0]
         };
         Ok(VideoStream {
+            audio_url: if play["dash"].is_object() {
+                play["dash"]["audio"]
+                    .as_array()
+                    .and_then(|a| {
+                        a.iter()
+                            .min_by_key(|v| v["bandwidth"].as_u64().unwrap_or(u64::MAX))
+                    })
+                    .map(select_stream_url)
+                    .transpose()?
+            } else {
+                Some(select_stream_url(video)?)
+            },
             url: select_stream_url(video)?,
             duration,
         })

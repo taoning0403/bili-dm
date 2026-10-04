@@ -1,4 +1,5 @@
 //! Player contracts, independent of torrent, database, and frontend.
+pub mod audio_probe;
 pub mod mpv;
 mod native;
 pub mod probe;
