@@ -4,6 +4,8 @@
 
 视频直接显示在应用主窗口。支持磁力链接、种子文件、本地视频、自然排序播放队列、自动连播、下一集预取、断点续播、外挂字幕、音轨切换、倍速、章节、逐帧及全屏。播放器运行库随 macOS 应用包携带，不再启动外部 mpv 进程。
 
+新增内置 **Bilibili 弹幕混合**：批量解析 BV / 视频链接及分 P，以画面和时长匹配当前视频，支持手动调整多个截取区间、混合多套弹幕、保存/导出 XML，并在播放器中独立于字幕显示。入口为右侧“混合弹幕”，先打开视频再配置。详见 [使用与验证说明](docs/danmaku-mixer.md)。
+
 ## 环境与启动
 
 已验证平台：macOS Apple Silicon。需要 Node.js 22.12+、npm、Rust stable、Xcode Command Line Tools。SQLite 随 Rust 构建，libmpv 通过固定版本和 SHA-256 校验的脚本准备：
@@ -57,7 +59,8 @@ Windows/Linux 尚未完成原生验证，也没有自动运行库安装脚本。
 
 ```sh
 npm run check          # TypeScript、rustfmt、Clippy -D warnings
-npm run rust:test      # 21 个单元/集成测试
+npm run rust:test      # Rust 单元/集成测试
+npm test              # 弹幕时钟与排布测试
 npm run desktop:build -- --bundles app
 ```
 
@@ -84,7 +87,7 @@ streaming_smoke 的输入目录需要两个可 seek、时长大于 30 秒的视�
 
 保持 Frontend → Service → Tauri Command → Rust Core → TorrentEngine / PlayerBackend / LibraryRepository。视频字节经 rqbit reader → 127.0.0.1 随机端口及 token → libmpv，不经过 Tauri JSON。libmpv 原生画面位于透明 WebView 下方，React 控制面板通过视口比例限定视频区域。
 
-详见 [架构说明](docs/architecture.md)。本次重做覆盖磁力和播放器主链路；Frame Player 的 TMDB/Torznab 目录、投屏、一起看、在线字幕搜索、帧预览、HDR 专项调校等未移植。弹幕、B 站匹配、AI 与插件运行时仍属于后续独立模块。
+详见 [架构说明](docs/architecture.md)。Frame Player 的 TMDB/Torznab 目录、投屏、一起看、在线字幕搜索、帧预览、HDR 专项调校等未移植。B 站弹幕解析和视觉匹配由独立内置模块提供；账户、AI 和第三方插件运行时尚未实现。
 
 纯 BT v2 magnet 暂不支持；无节点或数据损坏时可能无法播放。硬件解码使用 mpv auto-safe，由实际编解码器和设备决定；Windows/Linux、公网 swarm、HDR 和各种字幕格式仍需目标环境验证。
 

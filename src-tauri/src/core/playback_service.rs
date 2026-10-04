@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveMedia {
+    pub session_id: String,
     pub title: String,
     pub source: &'static str,
     pub torrent_id: Option<String>,
@@ -33,7 +34,7 @@ pub struct ActiveMedia {
     pub resumed_from: f64,
 }
 impl ActiveMedia {
-    fn path(&self) -> String {
+    pub fn path(&self) -> String {
         self.local_path.clone().unwrap_or_else(|| {
             format!(
                 "torrent://{}/{}",
@@ -79,6 +80,8 @@ pub struct QueueOptions {
 }
 
 struct SessionState {
+    analysis_cancel: CancellationToken,
+    playable_source: Option<String>,
     media: Option<ActiveMedia>,
     queue: Vec<MediaFile>,
     subtitles: Vec<MediaFile>,
@@ -93,6 +96,8 @@ struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
+            analysis_cancel: CancellationToken::new(),
+            playable_source: None,
             media: None,
             queue: vec![],
             subtitles: vec![],
@@ -115,6 +120,12 @@ pub struct PlaybackService {
     published: RwLock<PlaybackState>,
     opening: Mutex<CancellationToken>,
     lifetime: CancellationToken,
+}
+pub struct AnalysisMedia {
+    pub key: String,
+    pub source: String,
+    pub duration: f64,
+    pub cancel: CancellationToken,
 }
 impl PlaybackService {
     pub fn new(
@@ -194,6 +205,7 @@ impl PlaybackService {
                 .await?;
             let url = server.source_url(id.to_owned(), file.clone()).await;
             let mut media = ActiveMedia {
+                session_id: uuid::Uuid::new_v4().to_string(),
                 title: file.path.clone(),
                 source: "torrent",
                 torrent_id: Some(id.to_owned()),
@@ -237,6 +249,8 @@ impl PlaybackService {
         // untracked download running. Store current before load for cleanup.
         self.library.save_media(media.record(None)).await?;
         state.media = Some(media.clone());
+        state.playable_source = Some(source.to_owned());
+        state.analysis_cancel = CancellationToken::new();
         self.player.load(source, media.resumed_from).await?;
         state.ready = false;
         state.ended = false;
@@ -259,6 +273,7 @@ impl PlaybackService {
         }
         self.stop_inner(&mut state, true).await?;
         let mut media = ActiveMedia {
+            session_id: uuid::Uuid::new_v4().to_string(),
             title: path
                 .file_name()
                 .unwrap_or_default()
@@ -427,6 +442,8 @@ impl PlaybackService {
         Ok(())
     }
     async fn stop_inner(&self, state: &mut SessionState, clear_queue: bool) -> AppResult<()> {
+        state.analysis_cancel.cancel();
+        state.playable_source = None;
         let saved = self.persist(state).await;
         // Cancel readers before pausing the engine, including blocked HTTP bodies.
         if let Some(server) = self.server.get() {
@@ -451,6 +468,30 @@ impl PlaybackService {
         saved?;
         paused?;
         stored
+    }
+    pub async fn analysis_media(&self, session_id: &str) -> AppResult<AnalysisMedia> {
+        let state = self.session.lock().await;
+        let media = state
+            .media
+            .as_ref()
+            .filter(|m| m.session_id == session_id)
+            .ok_or_else(|| AppError::new("MEDIA_CHANGED", "当前视频已切换，请重新操作弹幕。"))?;
+        let player = self.player.snapshot().await?;
+        if !player.loaded || !player.duration.is_finite() || player.duration <= 0.0 {
+            return Err(AppError::new(
+                "NO_PLAYER",
+                "请先打开视频并等待时长加载完成。",
+            ));
+        }
+        Ok(AnalysisMedia {
+            key: media.path(),
+            duration: player.duration,
+            source: state
+                .playable_source
+                .clone()
+                .ok_or_else(|| AppError::new("NO_PLAYER", "视频源尚未就绪。"))?,
+            cancel: state.analysis_cancel.child_token(),
+        })
     }
     pub async fn tick(&self) -> AppResult<()> {
         let Ok(mut state) = self.session.try_lock() else {

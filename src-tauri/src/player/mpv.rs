@@ -26,7 +26,7 @@ pub fn runtime_directory(resources: &Path) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib")
     }
 }
-fn library_name() -> &'static str {
+pub(super) fn library_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "libmpv.dylib"
     } else if cfg!(windows) {
@@ -240,6 +240,11 @@ impl PlayerBackend for MpvBackend {
                 })
                 .collect();
             Ok(PlayerSnapshot {
+                sampled_at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64() * 1000.0)
+                    .unwrap_or_default(),
+                video_aspect: number("video-params/aspect")?,
                 running: true,
                 loaded: client.loaded,
                 paused: flag("pause")?,

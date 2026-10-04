@@ -8,12 +8,16 @@ import { PlaybackQueue } from "../components/PlaybackQueue";
 import { usePlayback } from "../hooks/usePlayback";
 import { useRecentTorrents } from "../hooks/useRecentTorrents";
 import { RecentTorrents } from "../components/RecentTorrents";
+import { useDanmaku } from "../hooks/useDanmaku";
+import { DanmakuPanel } from "../components/DanmakuPanel";
+import { DanmakuOverlay } from "../components/DanmakuOverlay";
 
 export function HomePage() {
   const torrent = useTorrent(), playback = usePlayback();
+  const danmaku = useDanmaku(playback.state);
   const recent = useRecentTorrents(torrent.catalog, playback.state?.media?.torrentId);
   const [magnet, setMagnet] = useState("");
-  const [tab, setTab] = useState<"source" | "queue">("source");
+  const [tab, setTab] = useState<"source" | "queue" | "danmaku">("source");
   async function load(value: string) { setMagnet(value); await torrent.load(value); }
 
   useEffect(() => {
@@ -55,17 +59,21 @@ export function HomePage() {
     </header>
     <main className="workspace">
       <div className="screen-column">
-        <VideoSurface state={state} busy={playback.busy} onToggle={() => void playback.control({ type: "pause", paused: !state?.player.paused })} onFullscreen={() => void playback.toggleFullscreen()} />
+        <VideoSurface state={state} busy={playback.busy} onToggle={() => void playback.control({ type: "pause", paused: !state?.player.paused })} onFullscreen={() => void playback.toggleFullscreen()}>
+          <DanmakuOverlay state={state} track={danmaku.track} visible={danmaku.visible} opacity={danmaku.opacity} fontScale={danmaku.fontScale} busy={playback.busy} />
+        </VideoSurface>
         <PlayerControls key={state?.media?.localPath ?? (state?.media?.torrentId ?? "") + ":" + state?.media?.fileIndex}
           state={state} busy={playback.busy} fullscreen={playback.fullscreen} onControl={playback.control}
           onQueue={playback.selectQueue} onSubtitle={playback.openSubtitle} onFullscreen={() => void playback.toggleFullscreen()} />
         {(playback.error || state?.warning) && <div className="playback-alert" role="alert">{playback.error || state?.warning}</div>}
+        <div className="danmaku-toolbar"><button aria-pressed={danmaku.visible} disabled={!danmaku.track} onClick={() => danmaku.setVisible(!danmaku.visible)}>弹幕{danmaku.visible ? "开" : "关"}</button><button onClick={() => { if (playback.fullscreen) void playback.toggleFullscreen(false); setTab("danmaku"); }}>配置混合弹幕</button></div>
         <div className="player-footer"><span>LIBMPV <i /> 原生播放</span><span>Space 暂停 · ← → 跳转 · F 全屏</span></div>
       </div>
       <aside className="library-sidebar">
         <div className="sidebar-tabs" role="tablist" aria-label="资源与队列">
           <button role="tab" aria-selected={tab === "source"} aria-controls="source-panel" id="source-tab" onClick={() => setTab("source")}>打开资源</button>
           <button role="tab" aria-selected={tab === "queue"} aria-controls="queue-panel" id="queue-tab" onClick={() => setTab("queue")}>播放队列 <span>{state?.queue.length || ""}</span></button>
+          <button role="tab" aria-selected={tab === "danmaku"} aria-controls="danmaku-panel" id="danmaku-tab" onClick={() => setTab("danmaku")}>混合弹幕</button>
         </div>
         <div className="sidebar-content">
           {tab === "source" ? <div role="tabpanel" id="source-panel" aria-labelledby="source-tab">
@@ -78,7 +86,8 @@ export function HomePage() {
             </>}
             <RecentTorrents tasks={recent.tasks} disabled={torrent.loading} onLoad={load} />
             {recent.error && <p className="error-message">{recent.error}</p>}
-          </div> : <div role="tabpanel" id="queue-panel" aria-labelledby="queue-tab"><PlaybackQueue state={state} busy={playback.busy} onSelect={playback.selectQueue} onOptions={playback.options} /></div>}
+          </div> : tab === "queue" ? <div role="tabpanel" id="queue-panel" aria-labelledby="queue-tab"><PlaybackQueue state={state} busy={playback.busy} onSelect={playback.selectQueue} onOptions={playback.options} /></div> : null}
+          <div role="tabpanel" id="danmaku-panel" aria-labelledby="danmaku-tab" hidden={tab !== "danmaku"}><DanmakuPanel controller={danmaku} duration={state?.player.duration ?? 0} position={state?.player.position ?? 0} onSeek={seconds => void playback.control({ type: "seek", seconds })} /></div>
         </div>
         <div className="sidebar-footer">无需账号 · 缓存与记录保存在本机</div>
       </aside>

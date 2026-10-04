@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { playerService } from "../services/playerService";
 import { getErrorMessage } from "../lib/desktop";
 import type { PlaybackState } from "../types/player";
-interface Props { state: PlaybackState | null; busy: boolean; onToggle: () => void; onFullscreen: () => void }
-export function VideoSurface({ state, busy, onToggle, onFullscreen }: Props) {
+interface Props { state: PlaybackState | null; busy: boolean; onToggle: () => void; onFullscreen: () => void; children?: ReactNode }
+export function VideoSurface({ state, busy, onToggle, onFullscreen, children }: Props) {
   const surface = useRef<HTMLDivElement>(null);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState("");
@@ -45,6 +46,7 @@ export function VideoSurface({ state, busy, onToggle, onFullscreen }: Props) {
       <h1>一部好片，即刻开始</h1><p>粘贴磁力链接，或打开本地视频</p>
       <span>边下载边播放 · 原生画质 · 自动续播</span>
     </div>}
+    {children}
     {state?.media && <div className="video-title">{state.media.title.split("/").at(-1)}</div>}
     {loading && <div className="buffering-badge" role="status"><span className="spinner" />{busy ? "正在打开…" : "正在缓冲…"}</div>}
     {state?.player.ended && <div className="buffering-badge">本集播放结束</div>}

@@ -1,7 +1,8 @@
 import type { TorrentFile } from "./torrent";
-export interface ActiveMedia { title: string; source: "local" | "torrent"; torrentId: string | null; fileIndex: number | null; localPath: string | null; resumedFrom: number }
+export interface ActiveMedia { sessionId: string; title: string; source: "local" | "torrent"; torrentId: string | null; fileIndex: number | null; localPath: string | null; resumedFrom: number }
 export interface MediaTrack { id: number; kind: "video" | "audio" | "sub"; title: string; language: string; codec: string; selected: boolean; external: boolean }
 export interface PlayerSnapshot {
+  sampledAtMs: number; videoAspect: number;
   running: boolean; loaded: boolean; paused: boolean; buffering: boolean; ended: boolean;
   position: number; duration: number; volume: number; muted: boolean; speed: number;
   subtitleDelay: number; audioDelay: number; cacheSeconds: number; decoder: string;

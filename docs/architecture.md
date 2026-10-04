@@ -60,6 +60,6 @@ SQLite 连接使用 Mutex、spawn_blocking、WAL、外键、参数绑定及迁�
 
 ## 验证与扩展
 
-21 个自动化测试覆盖纯函数、真实 HTTP、SQLite 迁移和播放状态机。streaming_smoke 验证受控真实 BT + libmpv；原生 app 单独验证画面嵌入、字幕和窗口生命周期。浏览器页面、headless 解码、原生显示、公网节点和其他操作系统分别作为不同验证边界。
+自动化测试覆盖纯函数、真实 HTTP、SQLite 迁移、播放状态机以及弹幕解析/匹配/混合。streaming_smoke 验证受控真实 BT + libmpv；danmaku_smoke 验证独立 libmpv 取帧和公开 B 站 provider；原生 app 单独验证画面嵌入、叠层、字幕和窗口生命周期。浏览器页面、headless 解码、原生显示、公网节点和其他操作系统分别作为不同验证边界。
 
-后续弹幕、匹配和媒体信息模块应通过稳定媒体身份接入，不向 torrent/player/database 适配器加入 Bilibili 或 AI 业务字段。插件约定仍见 plugins/README.md。
+DanmakuService 通过稳定媒体身份及单次播放 session ID 接入，PlayerBackend 仅增加通用的快照时间戳/画面比例；独立 FrameProbe 负责解码取帧。Bilibili provider、匹配和混合均留在 danmaku 模块，不向 torrent/player/database 适配器加入 Bilibili 或 AI 业务字段。JSON 项目与 XML 保存在独立本地目录，Canvas 按播放器时钟显示，不占用字幕轨。契约见 [内置插件说明](../plugins/README.md) 和 [弹幕混合说明](danmaku-mixer.md)。

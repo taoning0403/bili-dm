@@ -131,3 +131,36 @@ h1, h2, p { margin: 0; } h2 { font-size: 14px; font-weight: 550; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation-duration: 3s !important; } }
 
 .macos .app-header { padding-left: 88px; }
+.danmaku-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.danmaku-toolbar { display: flex; gap: 8px; padding: 0 20px 10px; background: #151b17; }
+.danmaku-toolbar button { padding: 5px 9px; font-size: 10px; }
+.sidebar-tabs { gap: 18px; padding: 0 16px; }
+.danmaku-panel { font-size: 11px; line-height: 1.7; }
+.danmaku-panel .section-heading { margin-bottom: 12px; gap: 8px; }
+.danmaku-panel .section-heading h2 { font-size: 13px; }
+.danmaku-panel .section-heading span { white-space: nowrap; }
+.dm-input-label { display: block; margin: 16px 0 8px; }
+.danmaku-panel textarea { resize: vertical; width: 100%; min-height: 96px; background: #121813; color: #cadac7; border: 1px solid #39453a; border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.8; }
+.dm-section { border-top: 1px solid #354238; margin-top: 22px; padding-top: 18px; }
+.dm-section h2 { margin-bottom: 10px; font-size: 12px; }
+.dm-section h2 small { color: #9bab97; font-weight: 400; margin-left: 7px; }
+.dm-source { padding: 12px 0; border-bottom: 1px solid #2b362e; }
+.dm-source > label { display: flex; gap: 6px; align-items: flex-start; }
+.dm-source strong { font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
+.dm-source p { color: #8a9a86; font-size: 10px; margin: 6px 0; }
+.dm-source button, .dm-clip-actions button { font-size: 10px; padding: 5px 7px; }
+.dm-progress { display: flex; flex-direction: column; gap: 10px; padding: 12px; margin-top: 12px; background: #263329; border-radius: 8px; }
+.dm-progress progress { width: 100%; accent-color: #c4ddab; }
+.dm-clip { border: 1px solid #3e4e3e; border-radius: 8px; padding: 10px; margin: 14px 0; min-width: 0; }
+.dm-clip-title { overflow-wrap: anywhere; font-size: 10px; margin-bottom: 10px; }
+.dm-range-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.dm-range-grid label { font-size: 10px; color: #b2c2ab; }
+.dm-range-grid input { width: 100%; display: block; margin-top: 3px; border: 1px solid #475344; border-radius: 4px; background: #111913; color: #d5e7cb; padding: 7px 4px; font-size: 11px; }
+.dm-clip-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.dm-warning { color: #dab887 !important; margin-top: 8px; font-size: 10px; overflow-wrap: anywhere; }
+.dm-match-score { color: #b6dba4; font-size: 10px; margin: 8px 0 3px; }
+.dm-display-settings > label { display: flex; align-items: center; gap: 9px; margin: 10px 0; }
+.dm-display-settings input[type="range"] { min-width: 0; flex: 1; }
+.dm-display-settings > button { margin-top: 10px; }
+.dm-notice { padding: 12px; margin-top: 14px; color: #c7dfbd; background: #263729; border-radius: 6px; overflow-wrap: anywhere; }
+.danmaku-panel .error-message p + p { margin-top: 8px; }

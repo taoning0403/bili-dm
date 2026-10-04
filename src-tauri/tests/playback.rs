@@ -26,6 +26,196 @@ use std::{
 };
 use tokio::sync::{Mutex, Notify};
 
+struct DanmakuProviderFixture {
+    entered: Notify,
+}
+#[async_trait]
+impl bili_dm_lib::danmaku::bilibili::DanmakuProvider for DanmakuProviderFixture {
+    async fn videos(
+        &self,
+        input: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> AppResult<Vec<bili_dm_lib::danmaku::models::SourceInfo>> {
+        if input == "wait" {
+            self.entered.notify_one();
+            cancel.cancelled().await;
+            return Err(bili_dm_lib::danmaku::bilibili::cancelled());
+        }
+        if input == "bad" {
+            return Err(AppError::new("FIXTURE", "missing video"));
+        }
+        Ok(vec![bili_dm_lib::danmaku::models::SourceInfo {
+            id: input.into(),
+            bvid: "BV1xx411c7mD".into(),
+            cid: 1,
+            page: 1,
+            title: input.into(),
+            duration: 10.0,
+            comment_count: 0,
+            warnings: vec![],
+        }])
+    }
+    async fn comments(
+        &self,
+        mut info: bili_dm_lib::danmaku::models::SourceInfo,
+        _: &tokio_util::sync::CancellationToken,
+    ) -> AppResult<bili_dm_lib::danmaku::models::ParsedSource> {
+        info.comment_count = 1;
+        Ok(bili_dm_lib::danmaku::models::ParsedSource {
+            info,
+            comments: vec![bili_dm_lib::danmaku::models::Comment {
+                id: "1".into(),
+                time: 2.0,
+                mode: 1,
+                size: 25,
+                color: 0xffffff,
+                text: "hello".into(),
+            }],
+        })
+    }
+    async fn stream(
+        &self,
+        _: &bili_dm_lib::danmaku::models::SourceInfo,
+        _: &tokio_util::sync::CancellationToken,
+    ) -> AppResult<bili_dm_lib::danmaku::bilibili::VideoStream> {
+        Err(AppError::new("FIXTURE", "not used"))
+    }
+}
+
+#[tokio::test]
+async fn danmaku_projects_persist_mixes_handle_partial_failures_and_reject_stale_sessions(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bili_dm_lib::danmaku::{models::Clip, service::DanmakuService};
+    let (dir, _engine, _player, _library, playback) = setup().await?;
+    let media = playback.play_torrent("fixture", 7).await?;
+    playback.tick().await?;
+    let provider = Arc::new(DanmakuProviderFixture {
+        entered: Notify::new(),
+    });
+    let service = DanmakuService::new(
+        playback.clone(),
+        provider.clone(),
+        dir.path().into(),
+        dir.path().join("dm"),
+    );
+    let parsed = service
+        .resolve(
+            &media.session_id,
+            vec!["a".into(), "bad".into(), "b".into()],
+        )
+        .await?;
+    assert_eq!(parsed.sources.len(), 2);
+    assert_eq!(parsed.errors.len(), 1);
+    let clips = parsed
+        .sources
+        .iter()
+        .map(|source| Clip {
+            id: source.id.clone(),
+            source_id: source.id.clone(),
+            source_start: 0.0,
+            source_end: 10.0,
+            target_start: 20.0,
+            target_end: 30.0,
+            enabled: true,
+            confidence: None,
+            evidence: None,
+        })
+        .collect();
+    let applied = service.apply(&media.session_id, clips).await?;
+    let track = applied.mixed.ok_or("missing track")?;
+    assert_eq!(track.comments.len(), 2);
+    assert_eq!(track.comments[0].time, 22.0);
+    let xml = tokio::fs::read_to_string(&track.file_path).await?;
+    assert!(xml.contains("22.000,1,25,16777215"));
+    let reopened = DanmakuService::new(
+        playback.clone(),
+        provider,
+        dir.path().into(),
+        dir.path().join("dm"),
+    );
+    assert_eq!(
+        reopened
+            .workspace(&media.session_id)
+            .await?
+            .mixed
+            .ok_or("not persisted")?
+            .comments
+            .len(),
+        2
+    );
+    playback.play_torrent("fixture", 4).await?;
+    assert_eq!(
+        reopened
+            .workspace(&media.session_id)
+            .await
+            .err()
+            .ok_or("accepted stale")?
+            .code,
+        "MEDIA_CHANGED"
+    );
+    playback.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stopping_media_cancels_danmaku_work_and_releases_the_job(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bili_dm_lib::danmaku::service::DanmakuService;
+    let (dir, _engine, _player, _library, playback) = setup().await?;
+    let media = playback.play_torrent("fixture", 7).await?;
+    playback.tick().await?;
+    let analysis = playback.analysis_media(&media.session_id).await?;
+    let provider = Arc::new(DanmakuProviderFixture {
+        entered: Notify::new(),
+    });
+    let service = Arc::new(DanmakuService::new(
+        playback.clone(),
+        provider.clone(),
+        dir.path().into(),
+        dir.path().join("dm"),
+    ));
+    let work = {
+        let service = service.clone();
+        let session = media.session_id.clone();
+        tokio::spawn(async move { service.resolve(&session, vec!["wait".into()]).await })
+    };
+    provider.entered.notified().await;
+    assert!(service.status().running);
+    assert_eq!(
+        service
+            .resolve(&media.session_id, vec!["a".into()])
+            .await
+            .err()
+            .ok_or("allowed concurrency")?
+            .code,
+        "DANMAKU_BUSY"
+    );
+    playback.control(PlayerControl::Stop).await?;
+    assert!(analysis.cancel.is_cancelled());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), work)
+            .await??
+            .err()
+            .ok_or("not cancelled")?
+            .code,
+        "CANCELLED"
+    );
+    assert!(!service.status().running);
+    let reopened = playback.play_torrent("fixture", 7).await?;
+    playback.tick().await?;
+    assert_ne!(media.session_id, reopened.session_id);
+    assert_eq!(
+        service
+            .resolve(&reopened.session_id, vec!["a".into()])
+            .await?
+            .sources
+            .len(),
+        1
+    );
+    playback.shutdown().await;
+    Ok(())
+}
+
 #[derive(Default)]
 struct Engine {
     active: Mutex<Option<DownloadStats>>,

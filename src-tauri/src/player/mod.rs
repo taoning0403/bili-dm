@@ -1,6 +1,7 @@
 //! Player contracts, independent of torrent, database, and frontend.
 pub mod mpv;
 mod native;
+pub mod probe;
 use crate::core::error::AppResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,8 @@ pub struct Chapter {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerSnapshot {
+    pub sampled_at_ms: f64,
+    pub video_aspect: f64,
     pub running: bool,
     pub loaded: bool,
     pub paused: bool,

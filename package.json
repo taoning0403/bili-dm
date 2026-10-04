@@ -17,6 +17,7 @@
     "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
     "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --locked --tests",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "check": "npm run typecheck && npm run rust:fmt && npm run rust:clippy",
     "player:setup": "node scripts/setup-player.mjs"
   },

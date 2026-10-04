@@ -14,6 +14,12 @@ union NodeData {
     integer: i64,
     double: f64,
     list: *mut NodeList,
+    bytes: *mut ByteArray,
+}
+#[repr(C)]
+struct ByteArray {
+    data: *mut c_void,
+    size: usize,
 }
 #[repr(C)]
 struct Node {
@@ -45,6 +51,7 @@ struct Api {
     destroy: unsafe extern "C" fn(*mut c_void),
     option: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> c_int,
     command: unsafe extern "C" fn(*mut c_void, *const *const c_char) -> c_int,
+    command_ret: unsafe extern "C" fn(*mut c_void, *const *const c_char, *mut Node) -> c_int,
     get: unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *mut c_void) -> c_int,
     free_node: unsafe extern "C" fn(*mut Node),
     error: unsafe extern "C" fn(c_int) -> *const c_char,
@@ -57,6 +64,7 @@ pub struct Client {
     handle: *mut c_void,
     pub loaded: bool,
     pub last_error: Option<String>,
+    pub frame_revision: u64,
 }
 // mpv permits calls from any thread. The owning Mutex ensures a single caller
 // and prevents destruction while a property or event pointer is being read.
@@ -89,6 +97,7 @@ impl Client {
                 destroy: symbol!("mpv_terminate_destroy"),
                 option: symbol!("mpv_set_option_string"),
                 command: symbol!("mpv_command"),
+                command_ret: symbol!("mpv_command_ret"),
                 get: symbol!("mpv_get_property"),
                 free_node: symbol!("mpv_free_node_contents"),
                 error: symbol!("mpv_error_string"),
@@ -105,6 +114,7 @@ impl Client {
             handle,
             loaded: false,
             last_error: None,
+            frame_revision: 0,
         };
         for (key, value) in [
             ("config", "no"),
@@ -175,6 +185,28 @@ impl Client {
     pub fn set(&mut self, name: &str, value: impl ToString) -> AppResult<()> {
         self.command(&["set", name, &value.to_string()])
     }
+    pub fn screenshot_rgb(&mut self) -> AppResult<(usize, usize, Vec<u8>)> {
+        let args = [
+            cstring("screenshot-raw")?,
+            cstring("video")?,
+            cstring("rgba")?,
+        ];
+        let pointers = [
+            args[0].as_ptr(),
+            args[1].as_ptr(),
+            args[2].as_ptr(),
+            std::ptr::null(),
+        ];
+        let mut node = Node {
+            data: NodeData { integer: 0 },
+            format: 0,
+        };
+        self.check(unsafe { (self.api.command_ret)(self.handle, pointers.as_ptr(), &mut node) })?;
+        // The borrowed image is copied before freeing its result node.
+        let result = unsafe { copy_screenshot(&node) };
+        unsafe { (self.api.free_node)(&mut node) };
+        result
+    }
     pub fn property(&self, name: &str) -> AppResult<Value> {
         let name = cstring(name)?;
         let mut node = Node {
@@ -209,6 +241,7 @@ impl Client {
                     self.last_error = None;
                 }
                 8 => self.loaded = true,
+                21 => self.frame_revision = self.frame_revision.wrapping_add(1),
                 7 if !event.data.is_null() => {
                     let end = unsafe { &*event.data.cast::<EndFile>() };
                     if end.reason == 4 {
@@ -226,6 +259,56 @@ impl Client {
             }
         }
     }
+}
+
+unsafe fn copy_screenshot(node: &Node) -> AppResult<(usize, usize, Vec<u8>)> {
+    let invalid = || AppError::new("FRAME_DATA", "解码器返回的画面格式无效。");
+    if node.format != 8 || node.data.list.is_null() {
+        return Err(invalid());
+    }
+    let list = &*node.data.list;
+    if !(1..=32).contains(&list.count) || list.values.is_null() || list.keys.is_null() {
+        return Err(invalid());
+    }
+    let values = std::slice::from_raw_parts(list.values, list.count as usize);
+    let keys = std::slice::from_raw_parts(list.keys, list.count as usize);
+    let get = |name: &str| {
+        keys.iter()
+            .zip(values)
+            .find(|(key, _)| !key.is_null() && CStr::from_ptr(**key).to_bytes() == name.as_bytes())
+            .map(|(_, v)| v)
+    };
+    let integer = |key| {
+        get(key)
+            .filter(|v| v.format == 4)
+            .map(|v| v.data.integer)
+            .unwrap_or(0)
+    };
+    let (width, height, stride) = (integer("w"), integer("h"), integer("stride"));
+    if !(1..=4096).contains(&width)
+        || !(1..=4096).contains(&height)
+        || stride < width * 4
+        || stride > 65536
+    {
+        return Err(invalid());
+    }
+    let data = get("data")
+        .filter(|v| v.format == 9 && !v.data.bytes.is_null())
+        .ok_or_else(invalid)?;
+    let bytes = &*data.data.bytes;
+    let required = ((height - 1) * stride + width * 4) as usize;
+    if bytes.data.is_null() || bytes.size < required {
+        return Err(invalid());
+    }
+    let bytes = std::slice::from_raw_parts(bytes.data.cast::<u8>(), required);
+    let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let i = y * stride as usize + x * 4;
+            rgb.extend_from_slice(&bytes[i..i + 3]);
+        }
+    }
+    Ok((width as usize, height as usize, rgb))
 }
 impl Drop for Client {
     fn drop(&mut self) {

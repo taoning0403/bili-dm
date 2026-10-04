@@ -1,5 +1,6 @@
 mod commands;
 pub mod core;
+pub mod danmaku;
 pub mod database;
 pub mod media;
 pub mod player;
@@ -59,6 +60,12 @@ pub fn run() -> tauri::Result<()> {
                 Arc::new(library),
             );
             tauri::async_runtime::spawn(service.playback.clone().monitor());
+            app.manage(danmaku::service::DanmakuService::new(
+                service.playback.clone(),
+                Arc::new(danmaku::bilibili::BilibiliProvider::new()?),
+                app.path().resource_dir()?,
+                data_dir.join("danmaku"),
+            ));
             app.manage(service);
             Ok(())
         })
@@ -77,6 +84,13 @@ pub fn run() -> tauri::Result<()> {
             commands::player::set_player_fullscreen,
             commands::player::open_subtitle,
             commands::library::recent_torrents,
+            commands::danmaku::get_danmaku_workspace,
+            commands::danmaku::resolve_danmaku,
+            commands::danmaku::match_danmaku,
+            commands::danmaku::apply_danmaku,
+            commands::danmaku::get_danmaku_job,
+            commands::danmaku::cancel_danmaku,
+            commands::danmaku::export_danmaku,
         ])
         .build(tauri::generate_context!())?;
     app.run(move |handle, event| match event {
@@ -86,6 +100,7 @@ pub fn run() -> tauri::Result<()> {
         } => {
             api.prevent_close();
             if !closing.swap(true, Ordering::SeqCst) {
+                handle.state::<danmaku::service::DanmakuService>().cancel();
                 let playback = handle.state::<AppService>().playback.clone();
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -97,6 +112,7 @@ pub fn run() -> tauri::Result<()> {
         tauri::RunEvent::ExitRequested { api, .. } if !closing.load(Ordering::SeqCst) => {
             api.prevent_exit();
             if !closing.swap(true, Ordering::SeqCst) {
+                handle.state::<danmaku::service::DanmakuService>().cancel();
                 let playback = handle.state::<AppService>().playback.clone();
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
