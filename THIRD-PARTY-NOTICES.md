@@ -10,6 +10,12 @@ Components: mpv and FFmpeg (LGPL-2.1-or-later), libplacebo, GLib, FriBidi, Graph
 
 Frame Player itself is GPL-3.0-or-later; its library components retain their individual licenses. This notice describes the runtime used here, not a change to Frame Player's application license.
 
+## Windows x64 runtime
+
+Windows bundles the unmodified LGPL `libmpv-2.dll` from [zhongfly/mpv-winbuild release 2026-10-03-413ff0b1cd](https://github.com/zhongfly/mpv-winbuild/releases/tag/2026-10-03-413ff0b1cd), archive `mpv-dev-lgpl-x86_64-20261003-git-413ff0b1cd.7z`, SHA-256 `12a9966bad239672c97276f01a9e625504e0b1d1fdcff95256066eeb8ffb1f21`. The baseline x86_64 build is used, without the x86_64-v3 CPU requirement. Its build recipes and dependency sources are maintained in [mpv-winbuild](https://github.com/zhongfly/mpv-winbuild). mpv source revision: [413ff0b1cd](https://github.com/mpv-player/mpv/tree/413ff0b1cd).
+
+The replaceable library is installed under `lib/libmpv-2.dll` beside the Windows application. No Frame Player wrapper or FFmpeg executable is shipped. This Windows build uses mpv with `gpl=false` (LGPL-2.1-or-later) and statically includes LGPL-3.0 FFmpeg, as documented by its upstream builder. License texts are included under `licenses/native`; the macOS-specific libraries listed below are not part of the Windows bundle. The system Vulkan loader (`vulkan-1.dll`, normally installed by the GPU driver) is required by this build.
+
 ## Native runtime inventory
 
 These source links identify the projects used in the pinned archive. The exact mpv/FFmpeg pins, macOS patches and dependency packaging are recorded by the [upstream build recipe](https://github.com/risenxxx/frame-player/blob/e9767259d5f5ca25a5b2a5951b1ebc80c702ea73/scripts/build-macos-libs.sh).

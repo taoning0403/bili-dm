@@ -2,13 +2,13 @@
 
 本地优先的桌面媒体播放器，当前版本 **0.3.0**。磁力播放链路参考 [Frame Player](https://github.com/risenxxx/frame-player/tree/e9767259d5f5ca25a5b2a5951b1ebc80c702ea73) 重新实现：Tauri 2 + React + Rust，librqbit 负责 BT，内嵌 libmpv 负责解码和显示，SQLite 保存历史与续播进度。
 
-视频直接显示在应用主窗口。支持磁力链接、种子文件、本地视频、自然排序播放队列、自动连播、下一集预取、断点续播、外挂字幕、音轨切换、倍速、章节、逐帧及全屏。播放器运行库随 macOS 应用包携带，不再启动外部 mpv 进程。
+视频直接显示在应用主窗口。支持磁力链接、种子文件、本地视频、自然排序播放队列、自动连播、下一集预取、断点续播、外挂字幕、音轨切换、倍速、章节、逐帧及全屏。播放器运行库随 macOS 应用包和 Windows 安装包携带，不再启动外部 mpv 进程。
 
 新增内置 **Bilibili 弹幕混合**：支持本机扫码登录、BV / ep / ss 与分 P 解析、按当前标题搜索，以及可调策略的音画分段匹配。可处理有序删减和局部重绘，支持时间轴调整、对应画面对照、混合多套弹幕、保存/导出 XML，并在播放器中独立于字幕显示。入口为右侧“混合弹幕”，先打开视频再配置。详见 [使用与验证说明](docs/danmaku-mixer.md)。
 
 ## 环境与启动
 
-已验证平台：macOS Apple Silicon。需要 Node.js 22.12+、npm、Rust stable、Xcode Command Line Tools。SQLite 随 Rust 构建，libmpv 通过固定版本和 SHA-256 校验的脚本准备：
+已验证平台：macOS Apple Silicon、Windows 11 x64。macOS 需要 Node.js 22.12+、npm、Rust stable、Xcode Command Line Tools。SQLite 随 Rust 构建，libmpv 通过固定版本和 SHA-256 校验的脚本准备：
 
 ```sh
 npm ci
@@ -19,7 +19,17 @@ npm run desktop:dev
 
 运行库下载到 src-tauri/lib，约 48 MiB，已从 Git 排除。macOS 使用支持 NSView 嵌入的 mpv 0.41.0；普通 Homebrew mpv 不能直接代替这一构建。运行库来源、构建补丁及许可证见 [第三方说明](THIRD-PARTY-NOTICES.md)。
 
-Windows/Linux 尚未完成原生验证，也没有自动运行库安装脚本。适配器预留 Win32/X11 窗口句柄；如自行移植，须在 src-tauri/lib 放置 libmpv-2.dll 或 libmpv.so.2 及其依赖，并验证透明 WebView、窗口叠放和打包。Wayland 嵌入暂不支持。
+Windows x64 需要 Node.js 22.12+、Rust stable MSVC 工具链、Visual Studio 2022 Build Tools（C++ 桌面开发和 Windows SDK）、WebView2，以及显卡驱动提供的 Vulkan loader。安装前述工具后，在 PowerShell 中运行：
+
+```powershell
+npm ci
+npm run player:setup
+npm run desktop:build -- --bundles nsis,msi -- --locked
+```
+
+`player:setup` 会下载固定版本并校验 SHA-256 的 Windows LGPL libmpv，安装包携带 `lib/libmpv-2.dll`。如果当前终端找不到刚安装的 Cargo，重新打开终端，或先执行 `$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"`。
+
+Linux 尚未完成原生验证，也没有自动运行库安装脚本。适配器预留 X11 窗口句柄；如自行移植，须在 src-tauri/lib 放置 libmpv.so.2 及其依赖，并验证透明 WebView、窗口叠放和打包。Wayland 嵌入暂不支持。
 
 仅运行 npm run dev 是浏览器预览，无法验证 Tauri 命令、BT 引擎或原生画面。
 
@@ -29,9 +39,11 @@ Windows/Linux 尚未完成原生验证，也没有自动运行库安装脚本。
 2. 视频按文件名自然排序，默认选第一集，保留引擎的真实文件 index。点击“播放选中视频”后只选择当前视频及匹配字幕。
 3. 视频通过私有 localhost HTTP Range 流送入 libmpv。拖动进度时，rqbit 的读取优先级跟随所请求的字节范围，无需下载完整文件。
 4. 播放队列支持切集、自动连播、单集循环和列表循环。当前视频完整下载后才预取一个后续视频，可随时关闭预取。
-5. 相同文件名或带语言后缀的字幕自动下载并挂载；单视频种子会匹配其字幕文件。也可在“音轨 / 字幕”中手动加载本地字幕、选轨或调整延迟。
+5. 相同文件名或带语言后缀的字幕自动下载并挂载；单视频种子会匹配其字幕文件。也可点击底部齿轮打开“播放设置”，手动加载本地字幕、选轨或调整延迟。
 6. 续播位置每 5 秒以及控制、切集、停止、退出时保存。已播完、开头不足 3 秒、距离结尾不足 5 秒的文件重新从头播放。
 7. 停止会撤销媒体 URL、取消等待读取并暂停下载。重启只显示历史，须主动选择播放才会连接 BT 网络。
+
+右侧功能面板可通过顶部“功能面板”按钮或画面右侧箭头展开、收起，应用会记住收起状态。底部采用黑色紧凑控制栏：播放时间靠近播放键，右侧提供倍速、音量、播放设置及全屏；音量滑杆在悬停或键盘聚焦音量按钮时显示。点击“配置混合弹幕”会展开对应面板，在全屏中也可使用。
 
 进度条浅色区域表示已校验分片，按文件字节比例估算时间位置；容器的可变码率会使该估算与真实时间有所偏差。libmpv 的“缓冲秒数”另行显示。
 
@@ -67,6 +79,10 @@ npm run desktop:build -- --bundles app
 
 macOS 产物：src-tauri/target/release/bundle/macos/Bili DM.app，包含播放器库和许可证。默认使用本地 ad-hoc 签名；尚未配置 Developer ID 分发签名、公证或自动更新。
 
+Windows 安装包位于 `src-tauri/target/release/bundle/nsis/`（`.exe`）和 `src-tauri/target/release/bundle/msi/`（`.msi`）。Windows 安装包尚未配置代码签名。单独复制 `target/release/bili-dm.exe` 不包含播放器库，分发时应使用安装包。
+
+2026-10-04 在 Windows 11 x64 / Radeon RX 9070 XT 上通过 TypeScript、rustfmt、Clippy、42 个 Rust 测试和 4 个前端测试。NSIS 安装和 MSI 解包通过；安装版已验证中文及空格路径的 H.264/AAC 视频、外挂字幕、鼠标暂停/继续、跳转和全屏切换，且加载的是安装目录内的 libmpv。受控本机种子在约 16.6% 下载进度时开始播放，续播、下一集预取和自动切集通过。音画匹配受控样本覆盖率为 98.7%，无警告。键盘快捷键在自动化输入下未确认生效，仍需手动复核。
+
 Entitlements.plist 允许本应用在 hardened runtime 下加载第三方 libmpv 动态库，避免签名后无法开始播放。不会修改系统安全设置。
 
 测试覆盖 metadata 参数、自然排序、字幕匹配、分片范围、HTTP Range/撤销阻塞读取、旧库迁移、续播、取消打开、解码错误清理、自动连播与预取边界。
@@ -90,6 +106,6 @@ streaming_smoke 的输入目录需要两个可 seek、时长大于 30 秒的视�
 
 详见 [架构说明](docs/architecture.md)。Frame Player 的 TMDB/Torznab 目录、投屏、一起看、在线字幕搜索、进度条悬浮帧预览、HDR 专项调校等未移植。B 站账号会话、搜索和音画匹配由独立本地模块提供；无线上应用后端、浏览器登录态导入或第三方插件运行时。
 
-纯 BT v2 magnet 暂不支持；无节点或数据损坏时可能无法播放。硬件解码使用 mpv auto-safe，由实际编解码器和设备决定；Windows/Linux、公网 swarm、HDR 和各种字幕格式仍需目标环境验证。
+纯 BT v2 magnet 暂不支持；无节点或数据损坏时可能无法播放。硬件解码使用 mpv auto-safe，由实际编解码器和设备决定；Linux、其他 Windows 显卡/驱动、公网 swarm、HDR 和各种字幕格式仍需目标环境验证。
 
 Phase 1–6 文档保留为 0.2.0 历史记录：[初始化](docs/phase-1.md)、[磁力](docs/phase-2.md)、[分类](docs/phase-3.md)、[旧播放链路](docs/phase-4.md)、[旧 UI](docs/phase-5.md)、[持久化](docs/phase-6.md)。当前行为以本文件和架构说明为准。

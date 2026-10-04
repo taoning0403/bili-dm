@@ -11,6 +11,7 @@ import { RecentTorrents } from "../components/RecentTorrents";
 import { useDanmaku } from "../hooks/useDanmaku";
 import { DanmakuPanel } from "../components/DanmakuPanel";
 import { DanmakuOverlay } from "../components/DanmakuOverlay";
+import { PlayerIcon } from "../components/PlayerIcon";
 
 export function HomePage() {
   const torrent = useTorrent(), playback = usePlayback();
@@ -18,10 +19,17 @@ export function HomePage() {
   const recent = useRecentTorrents(torrent.catalog, playback.state?.media?.torrentId);
   const [magnet, setMagnet] = useState("");
   const [tab, setTab] = useState<"source" | "queue" | "danmaku">("source");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("bilidm.sidebarCollapsed") === "true"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("bilidm.sidebarCollapsed", String(sidebarCollapsed)); } catch { /* Storage is optional. */ }
+  }, [sidebarCollapsed]);
   async function load(value: string) { setMagnet(value); await torrent.load(value); }
 
   useEffect(() => {
     function key(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
       if (event.target instanceof HTMLElement && (event.target.closest("input,textarea,select") || event.target.isContentEditable
         || (event.target.closest("button") && ["Space", "Enter"].includes(event.code)))) return;
       const p = playback.state?.player;
@@ -49,11 +57,17 @@ export function HomePage() {
   }, [playback]);
 
   const state = playback.state;
-  return <div className={"app-shell" + (navigator.platform.startsWith("Mac") ? " macos" : "") + (playback.fullscreen ? " is-fullscreen" : "")}>
+  const sidebarLabel = sidebarCollapsed ? "展开功能面板" : "收起功能面板";
+  function configureDanmaku() {
+    if (playback.fullscreen) void playback.toggleFullscreen(false);
+    setSidebarCollapsed(false); setTab("danmaku");
+  }
+  return <div className={"app-shell" + (navigator.platform.startsWith("Mac") ? " macos" : "") + (playback.fullscreen ? " is-fullscreen" : "") + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
     <header className="app-header">
       <div className="brand"><span className="brand-mark" aria-hidden="true">▶</span><div><strong>Bili DM</strong><span>本地影院</span></div></div>
       <div className="header-actions">
-        <button onClick={() => void torrent.openFile()} disabled={torrent.loading}>打开种子</button>
+        <button className="panel-toggle" aria-label={sidebarLabel} title={sidebarLabel} aria-expanded={!sidebarCollapsed} aria-controls="library-sidebar" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}><PlayerIcon name="panel" /><span>功能面板</span></button>
+        <button onClick={() => { setSidebarCollapsed(false); setTab("source"); void torrent.openFile(); }} disabled={torrent.loading}>打开种子</button>
         <button className="primary-button" onClick={() => void playback.openLocal()} disabled={playback.busy}>打开本地视频</button>
       </div>
     </header>
@@ -62,14 +76,14 @@ export function HomePage() {
         <VideoSurface state={state} busy={playback.busy} onToggle={() => void playback.control({ type: "pause", paused: !state?.player.paused })} onFullscreen={() => void playback.toggleFullscreen()}>
           <DanmakuOverlay state={state} track={danmaku.track} visible={danmaku.visible} opacity={danmaku.opacity} fontScale={danmaku.fontScale} busy={playback.busy} />
         </VideoSurface>
+        <button className="sidebar-handle" title={sidebarLabel} aria-label={sidebarLabel} aria-expanded={!sidebarCollapsed} aria-controls="library-sidebar" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}><PlayerIcon name={sidebarCollapsed ? "chevronLeft" : "chevronRight"} /></button>
         <PlayerControls key={state?.media?.localPath ?? (state?.media?.torrentId ?? "") + ":" + state?.media?.fileIndex}
           state={state} busy={playback.busy} fullscreen={playback.fullscreen} onControl={playback.control}
-          onQueue={playback.selectQueue} onSubtitle={playback.openSubtitle} onFullscreen={() => void playback.toggleFullscreen()} />
+          onQueue={playback.selectQueue} onSubtitle={playback.openSubtitle} onFullscreen={() => void playback.toggleFullscreen()}
+          danmakuVisible={danmaku.visible} hasDanmaku={!!danmaku.track} onToggleDanmaku={() => danmaku.setVisible(!danmaku.visible)} onConfigureDanmaku={configureDanmaku} />
         {(playback.error || state?.warning) && <div className="playback-alert" role="alert">{playback.error || state?.warning}</div>}
-        <div className="danmaku-toolbar"><button aria-pressed={danmaku.visible} disabled={!danmaku.track} onClick={() => danmaku.setVisible(!danmaku.visible)}>弹幕{danmaku.visible ? "开" : "关"}</button><button onClick={() => { if (playback.fullscreen) void playback.toggleFullscreen(false); setTab("danmaku"); }}>配置混合弹幕</button></div>
-        <div className="player-footer"><span>LIBMPV <i /> 原生播放</span><span>Space 暂停 · ← → 跳转 · F 全屏</span></div>
       </div>
-      <aside className="library-sidebar">
+      <aside className="library-sidebar" id="library-sidebar" aria-label="功能面板" hidden={sidebarCollapsed}>
         <div className="sidebar-tabs" role="tablist" aria-label="资源与队列">
           <button role="tab" aria-selected={tab === "source"} aria-controls="source-panel" id="source-tab" onClick={() => setTab("source")}>打开资源</button>
           <button role="tab" aria-selected={tab === "queue"} aria-controls="queue-panel" id="queue-tab" onClick={() => setTab("queue")}>播放队列 <span>{state?.queue.length || ""}</span></button>
